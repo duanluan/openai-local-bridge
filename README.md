@@ -19,6 +19,13 @@ openssl version
 
 ## 安装
 
+可选镜像：
+- `https://gitclone.com/github.com/duanluan/openai-local-bridge.git`
+- `https://wget.la/https://github.com/duanluan/openai-local-bridge.git`
+- `https://hk.gh-proxy.org/https://github.com/duanluan/openai-local-bridge.git`
+- `https://ghfast.top/https://github.com/duanluan/openai-local-bridge.git`
+- `https://githubfast.com/duanluan/openai-local-bridge.git`
+
 ### 方式 1：uv
 
 ```bash
