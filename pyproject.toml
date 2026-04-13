@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openai-local-bridge"
+version = "0.1.0"
+description = "Local OpenAI bridge CLI for OpenAI-compatible upstreams"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["cli", "openai", "bridge", "proxy", "rich"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: Proxy Servers",
+  "Topic :: Software Development :: User Interfaces",
+  "Topic :: System :: Networking",
+]
+dependencies = [
+  "cryptography>=44.0.0",
+  "requests>=2.31.0",
+  "rich>=13.7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/duanluan/openai-local-bridge"
+Repository = "https://github.com/duanluan/openai-local-bridge"
+Issues = "https://github.com/duanluan/openai-local-bridge/issues"
+
+[project.scripts]
+olb = "olb_cli:main"
+
+[tool.hatch.build.targets.wheel]
+include = [
+  "olb_cli.py",
+  "openai_local_bridge.py",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "olb_cli.py",
+  "openai_local_bridge.py",
+  "README.md",
+  "pyproject.toml",
+  "tests/*.py",
+]
+
+[tool.uv]
+package = true
