@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-
 import argparse
 import json
 import logging
 import os
+from pathlib import Path
+import signal
 import ssl
 import sys
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -369,7 +371,74 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
+    parser.add_argument("--pid-file")
     return parser.parse_args()
+
+
+def read_pid_file(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        path.unlink(missing_ok=True)
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        path.unlink(missing_ok=True)
+        return None
+    return pid if pid > 0 else None
+
+
+def process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@contextmanager
+def pid_file_guard(pid_file: str | None):
+    if not pid_file:
+        yield None
+        return
+
+    path = Path(pid_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_pid = read_pid_file(path)
+    if existing_pid is not None and existing_pid != os.getpid() and process_exists(existing_pid):
+        raise StartupError(f"bridge already running (pid {existing_pid})")
+
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    try:
+        yield path
+    finally:
+        current_pid = read_pid_file(path)
+        if current_pid is None or current_pid == os.getpid():
+            path.unlink(missing_ok=True)
+
+
+def install_signal_handlers() -> dict[int, Any]:
+    previous: dict[int, Any] = {}
+
+    def handle_shutdown(signum: int, frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    for signame in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, signame, None)
+        if sig is None:
+            continue
+        previous[sig] = signal.getsignal(sig)
+        signal.signal(sig, handle_shutdown)
+    return previous
+
+
+def restore_signal_handlers(previous: dict[int, Any]) -> None:
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
 
 
 def create_server() -> ThreadingHTTPServer:
@@ -397,6 +466,7 @@ def main() -> None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=args.cert, keyfile=args.key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
+    previous_handlers = install_signal_handlers()
 
     LOG.info(
         "listen https://%s:%s -> %s",
@@ -405,7 +475,14 @@ def main() -> None:
         SETTINGS["upstream_base"],
     )
 
-    server.serve_forever()
+    try:
+        with pid_file_guard(args.pid_file):
+            server.serve_forever()
+    except KeyboardInterrupt:
+        LOG.info("bridge stopped")
+    finally:
+        restore_signal_handlers(previous_handlers)
+        server.server_close()
 
 
 if __name__ == "__main__":

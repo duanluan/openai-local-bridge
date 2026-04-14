@@ -148,7 +148,7 @@ class RunStartTests(unittest.TestCase):
         console_print.assert_called_once_with("未检测到配置，先进入初始化。初始化完成后会继续执行 enable 和 start。")
         ensure_config.assert_called_once_with(paths, interactive=True)
         run_enable.assert_called_once_with(paths)
-        start_proxy.assert_called_once_with(paths, config)
+        start_proxy.assert_called_once_with(paths, config, background=False)
 
     def test_run_start_skips_init_notice_when_config_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,7 +178,34 @@ class RunStartTests(unittest.TestCase):
             exit_code = olb_cli.main()
 
         self.assertEqual(exit_code, 0)
-        run_start.assert_called_once_with(paths)
+        run_start.assert_called_once_with(paths, background=False)
+
+    def test_run_start_supports_background_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with (
+                mock.patch.object(olb_cli, "ensure_config", return_value=config),
+                mock.patch.object(olb_cli, "run_enable"),
+                mock.patch.object(olb_cli, "start_proxy", return_value=0) as start_proxy,
+            ):
+                exit_code = olb_cli.run_start(paths, background=True)
+
+        self.assertEqual(exit_code, 0)
+        start_proxy.assert_called_once_with(paths, config, background=True)
+
+    def test_main_start_background_passes_flag(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_start", return_value=0) as run_start,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "start", "--background"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_start.assert_called_once_with(paths, background=True)
 
 
 class StartProxyTests(unittest.TestCase):
@@ -228,6 +255,66 @@ class StartProxyTests(unittest.TestCase):
             command = olb_cli.build_proxy_command(Path("/tmp/test.crt"), Path("/tmp/test.key"), env)
 
         self.assertEqual(command[:3], [olb_cli.sys.executable, "-m", "openai_local_bridge"])
+
+    def test_build_proxy_command_appends_pid_file(self):
+        env = {
+            "OLB_LISTEN_PORT": "8443",
+            "OLB_UPSTREAM_BASE": "https://example.com/v1",
+            "OLB_UPSTREAM_KEY": "test-key",
+        }
+
+        with (
+            mock.patch.object(olb_cli, "detect_os", return_value="linux"),
+            mock.patch.object(olb_cli.os, "geteuid", return_value=1000, create=True),
+        ):
+            command = olb_cli.build_proxy_command(
+                Path("/tmp/test.crt"),
+                Path("/tmp/test.key"),
+                env,
+                pid_file=Path("/tmp/bridge.pid"),
+            )
+
+        self.assertEqual(command[-2:], ["--pid-file", "/tmp/bridge.pid"])
+
+    def test_start_proxy_rejects_second_running_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with mock.patch.object(olb_cli, "running_bridge_pid", return_value=321):
+                with self.assertRaises(olb_cli.CliError) as exc:
+                    olb_cli.start_proxy(paths, config)
+
+        self.assertEqual(str(exc.exception), "bridge already running (pid 321)")
+
+    def test_start_proxy_background_uses_popen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+            process = mock.Mock(spec=subprocess.Popen)
+            process.poll.return_value = None
+
+            with (
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=None),
+                mock.patch.object(olb_cli, "validate_upstream"),
+                mock.patch.object(olb_cli, "ensure_domain_cert", return_value=(Path("/tmp/test.crt"), Path("/tmp/test.key"))),
+                mock.patch.object(olb_cli, "env_from_config", return_value={"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "8443"}),
+                mock.patch.object(olb_cli, "build_proxy_command", return_value=["python", "-m", "openai_local_bridge"]) as build_proxy_command,
+                mock.patch.object(olb_cli, "prepare_background_launch"),
+                mock.patch.object(olb_cli.subprocess, "Popen", return_value=process) as popen,
+                mock.patch.object(olb_cli, "wait_for_background_start", return_value=0) as wait_for_background_start,
+            ):
+                exit_code = olb_cli.start_proxy(paths, config, background=True)
+
+        self.assertEqual(exit_code, 0)
+        build_proxy_command.assert_called_once_with(
+            Path("/tmp/test.crt"),
+            Path("/tmp/test.key"),
+            {"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "8443"},
+            pid_file=paths.root / "bridge.pid",
+        )
+        popen.assert_called_once()
+        wait_for_background_start.assert_called_once_with(paths, process, paths.root / "bridge.log")
 
 
 class NssTests(unittest.TestCase):
@@ -284,6 +371,64 @@ class RequireCommandTests(unittest.TestCase):
                 olb_cli.require_command("openssl")
 
         self.assertIn("Windows 请先安装 OpenSSL", str(exc.exception))
+
+
+class StopProxyTests(unittest.TestCase):
+    def test_running_bridge_pid_removes_stale_pid_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            paths.root.mkdir(parents=True, exist_ok=True)
+            pid_file = paths.root / "bridge.pid"
+            pid_file.write_text("123\n", encoding="utf-8")
+
+            with mock.patch.object(olb_cli, "process_exists", return_value=False):
+                pid = olb_cli.running_bridge_pid(paths)
+
+            stale_removed = not pid_file.exists()
+
+        self.assertIsNone(pid)
+        self.assertTrue(stale_removed)
+
+    def test_stop_proxy_returns_zero_when_not_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+
+            with mock.patch.object(olb_cli.console, "print") as console_print:
+                exit_code = olb_cli.stop_proxy(paths)
+
+        self.assertEqual(exit_code, 0)
+        console_print.assert_called_once_with("bridge 未运行")
+
+    def test_stop_proxy_terminates_running_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            paths.root.mkdir(parents=True, exist_ok=True)
+            (paths.root / "bridge.pid").write_text("456\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=456),
+                mock.patch.object(olb_cli, "stop_signal") as stop_signal,
+                mock.patch.object(olb_cli, "wait_for_process_exit", side_effect=[True]) as wait_for_process_exit,
+                mock.patch.object(olb_cli.console, "print") as console_print,
+            ):
+                exit_code = olb_cli.stop_proxy(paths)
+
+        self.assertEqual(exit_code, 0)
+        stop_signal.assert_called_once_with(456)
+        wait_for_process_exit.assert_called_once_with(456, 5)
+        console_print.assert_called_once_with("bridge 已停止（PID 456）")
+
+    def test_main_stop_runs_stop_flow(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_stop", return_value=0) as run_stop,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "stop"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_stop.assert_called_once_with(paths)
 
     def test_run_command_shows_windows_openssl_hint_on_file_not_found(self):
         with (

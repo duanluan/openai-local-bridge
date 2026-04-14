@@ -69,6 +69,12 @@ The most direct way to use it is:
 olb start
 ```
 
+Run it in the background:
+
+```bash
+olb start --background
+```
+
 If the machine has not been configured yet, `olb start` first runs initialization, then continues with enablement and startup. In interactive mode, it asks for:
 
 - `Base URL`
@@ -87,6 +93,12 @@ To stop the takeover:
 olb disable
 ```
 
+To stop a running bridge process:
+
+```bash
+olb stop
+```
+
 ## Common Commands
 
 Command overview:
@@ -99,6 +111,8 @@ Command overview:
 - `enable`: install certificates, update hosts, and manage NSS on supported platforms
 - `disable`: remove the hosts takeover
 - `start`: if not initialized, run setup first, then execute `enable` and start the bridge immediately
+- `start --background`: start the bridge in the background and write logs to the config directory
+- `stop`: stop the current bridge process, including one started in the background
 
 ## Wrapper Script Entry Points
 

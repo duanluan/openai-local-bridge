@@ -69,6 +69,12 @@ irm https://raw.githubusercontent.com/duanluan/openai-local-bridge/main/install.
 olb start
 ```
 
+后台启动：
+
+```bash
+olb start --background
+```
+
 如果本机还没有配置，`olb start` 会先进入初始化，再继续执行启用和启动；交互式会采集：
 
 - `Base URL`
@@ -87,6 +93,12 @@ olb init
 olb disable
 ```
 
+关闭当前运行中的 bridge：
+
+```bash
+olb stop
+```
+
 ## 常用命令
 
 命令说明：
@@ -99,6 +111,8 @@ olb disable
 - `enable`：安装证书、处理 hosts，并在支持的平台上处理 NSS
 - `disable`：取消 hosts 接管
 - `start`：未初始化时先进入初始化，然后执行 `enable` 并直接启动 bridge
+- `start --background`：以后台模式启动 bridge，并将日志写到配置目录
+- `stop`：停止当前 bridge 进程，包括后台运行中的实例
 
 ## 包装脚本入口
 

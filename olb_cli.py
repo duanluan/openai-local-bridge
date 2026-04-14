@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -99,6 +101,50 @@ def get_paths() -> AppPaths:
         root_ca_srl=cert_dir / f"{ROOT_CA_NAME}.srl",
         nss_db_dir=Path.home() / ".pki" / "nssdb",
     )
+
+
+def bridge_pid_file(paths: AppPaths) -> Path:
+    return paths.root / "bridge.pid"
+
+
+def bridge_log_file(paths: AppPaths) -> Path:
+    return paths.root / "bridge.log"
+
+
+def read_pid_file(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        path.unlink(missing_ok=True)
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        path.unlink(missing_ok=True)
+        return None
+    return pid if pid > 0 else None
+
+
+def process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def running_bridge_pid(paths: AppPaths) -> int | None:
+    pid_path = bridge_pid_file(paths)
+    pid = read_pid_file(pid_path)
+    if pid is None:
+        return None
+    if process_exists(pid):
+        return pid
+    pid_path.unlink(missing_ok=True)
+    return None
 
 
 def mask_secret(value: str) -> str:
@@ -212,8 +258,16 @@ def preserved_olb_env_names(env: dict[str, str]) -> str:
     return ",".join(sorted(name for name in env if name.startswith("OLB_")))
 
 
-def build_proxy_command(domain_crt: Path, domain_key: Path, env: dict[str, str]) -> list[str]:
+def build_proxy_command(
+    domain_crt: Path,
+    domain_key: Path,
+    env: dict[str, str],
+    *,
+    pid_file: Path | None = None,
+) -> list[str]:
     command = [sys.executable, "-m", "openai_local_bridge", "--cert", str(domain_crt), "--key", str(domain_key)]
+    if pid_file is not None:
+        command.extend(["--pid-file", str(pid_file)])
     if not should_elevate_for_listener(env.get("OLB_LISTEN_PORT", DEFAULT_LISTEN_PORT)):
         return command
 
@@ -649,20 +703,122 @@ def show_config(paths: AppPaths) -> None:
     console.print(table)
 
 
-def start_proxy(paths: AppPaths, config: dict[str, Any]) -> int:
+def prepare_background_launch(command: list[str]) -> None:
+    if command and command[0] == "sudo":
+        run_command(["sudo", "-v"])
+
+
+def wait_for_background_start(paths: AppPaths, process: subprocess.Popen[str], log_path: Path) -> int:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        pid = running_bridge_pid(paths)
+        if pid is not None:
+            console.print(f"bridge 已在后台运行，PID={pid}，日志={log_path}")
+            return 0
+
+        return_code = process.poll()
+        if return_code is not None:
+            detail = ""
+            if log_path.exists():
+                lines = log_path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+                if lines:
+                    detail = lines[-1]
+            if detail:
+                raise CliError(f"bridge 启动失败：{detail}")
+            raise CliError(f"bridge 启动失败，退出码 {return_code}")
+
+        time.sleep(0.2)
+
+    raise CliError(f"bridge 启动超时，请查看日志：{log_path}")
+
+
+def stop_signal(pid: int) -> None:
+    if detect_os() == "windows":
+        os.kill(pid, signal.SIGTERM)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except PermissionError:
+        run_privileged(["kill", "-TERM", str(pid)])
+
+
+def force_stop_signal(pid: int) -> None:
+    if detect_os() == "windows":
+        os.kill(pid, signal.SIGTERM)
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except PermissionError:
+        run_privileged(["kill", "-KILL", str(pid)])
+
+
+def wait_for_process_exit(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_exists(pid):
+            return True
+        time.sleep(0.2)
+    return not process_exists(pid)
+
+
+def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = False) -> int:
+    existing_pid = running_bridge_pid(paths)
+    if existing_pid is not None:
+        raise CliError(f"bridge already running (pid {existing_pid})")
+
     validate_upstream(config)
     domain_crt, domain_key = ensure_domain_cert(paths)
     env = env_from_config(config)
     listen_host = env.get("OLB_LISTEN_HOST", DEFAULT_LISTEN_HOST)
     listen_port = env.get("OLB_LISTEN_PORT", DEFAULT_LISTEN_PORT)
+    pid_path = bridge_pid_file(paths)
+    command = build_proxy_command(domain_crt, domain_key, env, pid_file=pid_path)
     console.print(
         Panel.fit(
-            f"target_host={get_target_host()}\nlisten={listen_host}:{listen_port}\nupstream={config['upstream_base']}",
+            f"target_host={get_target_host()}\nlisten={listen_host}:{listen_port}\nupstream={config['upstream_base']}\nmode={'background' if background else 'foreground'}",
             title="启动桥接器",
         )
     )
-    result = subprocess.run(build_proxy_command(domain_crt, domain_key, env), env=env)
+
+    if background:
+        prepare_background_launch(command)
+        paths.root.mkdir(parents=True, exist_ok=True)
+        log_path = bridge_log_file(paths)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            popen_kwargs: dict[str, Any] = {
+                "env": env,
+                "stdin": subprocess.DEVNULL,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+            }
+            if detect_os() == "windows":
+                popen_kwargs["creationflags"] = (
+                    getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                )
+            else:
+                popen_kwargs["start_new_session"] = True
+            process = subprocess.Popen(command, **popen_kwargs)
+        return wait_for_background_start(paths, process, log_path)
+
+    result = subprocess.run(command, env=env)
     return result.returncode
+
+
+def stop_proxy(paths: AppPaths) -> int:
+    pid = running_bridge_pid(paths)
+    if pid is None:
+        console.print("bridge 未运行")
+        return 0
+
+    stop_signal(pid)
+    if not wait_for_process_exit(pid, 5):
+        force_stop_signal(pid)
+        if not wait_for_process_exit(pid, 2):
+            raise CliError(f"无法停止 bridge（PID {pid}）")
+
+    bridge_pid_file(paths).unlink(missing_ok=True)
+    console.print(f"bridge 已停止（PID {pid}）")
+    return 0
 
 
 def run_init(paths: AppPaths) -> int:
@@ -686,20 +842,27 @@ def run_disable() -> int:
     return 0
 
 
-def run_start(paths: AppPaths) -> int:
+def run_start(paths: AppPaths, *, background: bool = False) -> int:
     if not paths.config_file.exists():
         console.print("未检测到配置，先进入初始化。初始化完成后会继续执行 enable 和 start。")
     config = ensure_config(paths, interactive=True)
     run_enable(paths)
-    return start_proxy(paths, config)
+    return start_proxy(paths, config, background=background)
+
+
+def run_stop(paths: AppPaths) -> int:
+    return stop_proxy(paths)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="olb")
     subparsers = parser.add_subparsers(dest="command")
 
-    for name in ["init", "enable", "disable", "status", "start", "config", "config-path", "bootstrap-ca", "install-ca", "install-nss", "install-hosts", "remove-hosts", "version"]:
+    for name in ["init", "enable", "disable", "status", "config", "config-path", "bootstrap-ca", "install-ca", "install-nss", "install-hosts", "remove-hosts", "version", "stop"]:
         subparsers.add_parser(name)
+
+    start_parser = subparsers.add_parser("start")
+    start_parser.add_argument("--background", action="store_true", help="run bridge in background")
 
     return parser
 
@@ -724,6 +887,8 @@ def main() -> int:
         if command == "status":
             print_status(paths)
             return 0
+        if command == "stop":
+            return run_stop(paths)
         if command == "config":
             show_config(paths)
             return 0
@@ -748,7 +913,7 @@ def main() -> int:
             remove_hosts()
             return 0
         if command == "start":
-            return run_start(paths)
+            return run_start(paths, background=args.background)
         if command == "version":
             console.print(app_version())
             return 0
