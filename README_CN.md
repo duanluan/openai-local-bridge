@@ -6,22 +6,17 @@
 
 ## 前置环境
 
-- `Git`
-- `Python`
-- `uv`：可选，但推荐。有它时 `npm` 启动器会优先直接运行最新 CLI。
 - `OpenSSL`：执行 `olb enable` 或 `olb start` 时需要它来生成本地证书。Windows 请先安装 [OpenSSL](https://slproweb.com/products/Win32OpenSSL.html)，并确认 `openssl.exe` 所在目录已加入 `PATH`。
 
-检查环境：
+运行前检查：
 
 ```bash
-git --version
-python --version
 openssl version
 ```
 
 ## 安装
 
-如果想直接使用自带 Python 运行时的独立二进制包，可以从 GitHub Releases 下载对应平台压缩包。此方式不再依赖本机 `Python` 或 `uv`，但执行 `olb enable` / `olb start` 仍然需要 `OpenSSL`。
+如果想直接使用自带 Python 运行时的独立二进制包，可以从 GitHub Releases 下载对应平台压缩包。此方式不再依赖本机 `Git`、`Python`、`uv`、`npm`，但执行 `olb enable` / `olb start` 仍然需要 `OpenSSL`。
 
 ### 方式 1：`uv`
 

@@ -6,22 +6,17 @@
 
 ## Prerequisites
 
-- `Git`
-- `Python`
-- `uv`: optional, but recommended. When available, the npm launcher prefers it so the latest CLI can be run directly.
 - `OpenSSL`: required when running `olb enable` or `olb start` to generate local certificates. On Windows, install [OpenSSL](https://slproweb.com/products/Win32OpenSSL.html) first and make sure the directory containing `openssl.exe` is in `PATH`.
 
-Check your environment:
+Runtime check:
 
 ```bash
-git --version
-python --version
 openssl version
 ```
 
 ## Installation
 
-If you want a standalone binary with the Python runtime bundled, download the platform archive from GitHub Releases. Those archives do not require `Python` or `uv`; only `OpenSSL` is still needed for `olb enable` / `olb start`.
+If you want a standalone binary with the Python runtime bundled, download the platform archive from GitHub Releases. Those archives do not require `Git`, `Python`, `uv`, or `npm`; only `OpenSSL` is still needed for `olb enable` / `olb start`.
 
 ### Method 1: `uv`
 

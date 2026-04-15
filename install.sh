@@ -2,8 +2,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/duanluan/openai-local-bridge"
-PACKAGE_REF="git+${REPO_URL}.git"
+PACKAGE_REF="openai-local-bridge"
 
 log() {
   printf '%s\n' "$*"

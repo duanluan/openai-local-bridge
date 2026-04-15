@@ -1,7 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl = 'https://github.com/duanluan/openai-local-bridge'
-$PackageRef = "git+$RepoUrl.git"
+$PackageRef = 'openai-local-bridge'
 
 function Get-AppLanguage {
     foreach ($value in @($env:OLB_LANG, $env:LC_ALL, $env:LC_MESSAGES, $env:LANG)) {
