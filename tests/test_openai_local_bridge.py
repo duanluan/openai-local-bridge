@@ -10,12 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "openai_local_bridge.py"
 
 
-def load_module():
+def load_module(language: str = "en"):
     env = {
         "OLB_UPSTREAM_BASE": "https://example.com/v1",
         "OLB_UPSTREAM_KEY": "test-key",
         "OLB_LISTEN_HOST": "127.0.0.1",
         "OLB_LISTEN_PORT": "443",
+        "OLB_LANG": language,
     }
     spec = importlib.util.spec_from_file_location("openai_local_bridge_test", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -95,6 +96,23 @@ class StartupTests(unittest.TestCase):
                         pass
 
         self.assertEqual(str(ctx.exception), "bridge already running (pid 789)")
+
+    def test_create_server_permission_error_uses_chinese_when_requested(self):
+        module = load_module("zh")
+
+        with mock.patch.dict(os.environ, {"OLB_LANG": "zh"}, clear=False):
+            with mock.patch.object(
+                module,
+                "ThreadingHTTPServer",
+                side_effect=PermissionError(13, "Permission denied"),
+            ):
+                with self.assertRaises(module.StartupError) as ctx:
+                    module.create_server()
+
+        self.assertEqual(
+            str(ctx.exception),
+            "无法绑定 127.0.0.1:443 的 HTTPS 监听；请把 OLB_LISTEN_PORT 设为 >=1024，或使用提权方式运行",
+        )
 
 
 if __name__ == "__main__":

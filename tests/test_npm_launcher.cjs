@@ -20,3 +20,10 @@ test('resolveBinaryPath accepts explicit override', () => {
 test('packageSpecFor rejects unsupported platform', () => {
   assert.throws(() => launcher.packageSpecFor('linux', 'arm64'), /unsupported platform/);
 });
+
+test('packageSpecFor localizes unsupported platform errors', () => {
+  assert.throws(
+    () => launcher.packageSpecFor('linux', 'arm64', { OLB_LANG: 'zh_CN' }),
+    /不支持的平台/,
+  );
+});

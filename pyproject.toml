@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openai-local-bridge"
-version = "0.2.6"
+version = "0.2.7"
 description = "Local OpenAI bridge CLI for OpenAI-compatible upstreams"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,12 +41,14 @@ olb = "olb_cli:main"
 
 [tool.hatch.build.targets.wheel]
 include = [
+  "olb_i18n.py",
   "olb_cli.py",
   "openai_local_bridge.py",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "olb_i18n.py",
   "olb_cli.py",
   "openai_local_bridge.py",
   "README.md",

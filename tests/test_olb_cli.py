@@ -20,9 +20,14 @@ def make_paths(root: Path) -> olb_cli.AppPaths:
     )
 
 
+def lang_env(language: str):
+    return mock.patch.dict(olb_cli.os.environ, {"OLB_LANG": language}, clear=False)
+
+
 class PromptForConfigTests(unittest.TestCase):
     def test_prompt_for_config_uses_fixed_reasoning_effort_choices(self):
         with (
+            lang_env("zh"),
             mock.patch.object(olb_cli.Prompt, "ask", side_effect=["https://example.com/v1", "test-key", "xhigh"]) as ask,
             mock.patch.object(olb_cli, "validate_upstream"),
         ):
@@ -44,6 +49,7 @@ class PromptForConfigTests(unittest.TestCase):
         }
 
         with (
+            lang_env("zh"),
             mock.patch.object(olb_cli.Prompt, "ask", side_effect=["https://saved.example/v1", "", "high"]) as ask,
             mock.patch.object(olb_cli, "validate_upstream"),
         ):
@@ -81,7 +87,7 @@ class VersionTests(unittest.TestCase):
 
     def test_app_version_falls_back_when_metadata_missing(self):
         with mock.patch.object(olb_cli, "package_version", side_effect=olb_cli.PackageNotFoundError):
-            self.assertEqual(olb_cli.app_version(), "0.2.6")
+            self.assertEqual(olb_cli.app_version(), "0.2.7")
 
     def test_main_supports_version_subcommand(self):
         with (
@@ -114,6 +120,32 @@ class VersionTests(unittest.TestCase):
             olb_cli.main()
 
         self.assertEqual(exc.exception.code, 2)
+
+
+class LocalizationTests(unittest.TestCase):
+    def test_build_parser_help_switches_to_english(self):
+        with lang_env("en"):
+            parser = olb_cli.build_parser()
+
+        help_text = parser.format_help()
+        start_help = parser._subparsers._group_actions[0].choices["start"].format_help()
+
+        self.assertIn("--lang {en,zh}", help_text)
+        self.assertIn("set command language", help_text)
+        self.assertIn("commands", help_text)
+        self.assertIn("run bridge in background", start_help)
+
+    def test_build_parser_help_switches_to_chinese(self):
+        with lang_env("zh"):
+            parser = olb_cli.build_parser()
+
+        help_text = parser.format_help()
+        start_help = parser._subparsers._group_actions[0].choices["start"].format_help()
+
+        self.assertIn("--lang {en,zh}", help_text)
+        self.assertIn("设置命令语言", help_text)
+        self.assertIn("命令", help_text)
+        self.assertIn("以后台模式运行 bridge", start_help)
 
 
 class DefaultCommandTests(unittest.TestCase):
@@ -158,6 +190,7 @@ class RunStartTests(unittest.TestCase):
             config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
 
             with (
+                lang_env("zh"),
                 mock.patch.object(olb_cli.console, "print") as console_print,
                 mock.patch.object(olb_cli, "ensure_config", return_value=config) as ensure_config,
                 mock.patch.object(olb_cli, "run_enable") as run_enable,
@@ -170,6 +203,25 @@ class RunStartTests(unittest.TestCase):
         ensure_config.assert_called_once_with(paths, interactive=True)
         run_enable.assert_called_once_with(paths)
         start_proxy.assert_called_once_with(paths, config, background=False)
+
+    def test_run_start_prints_english_notice_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with (
+                lang_env("en"),
+                mock.patch.object(olb_cli.console, "print") as console_print,
+                mock.patch.object(olb_cli, "ensure_config", return_value=config),
+                mock.patch.object(olb_cli, "run_enable"),
+                mock.patch.object(olb_cli, "start_proxy", return_value=0),
+            ):
+                exit_code = olb_cli.run_start(paths)
+
+        self.assertEqual(exit_code, 0)
+        console_print.assert_called_once_with(
+            "No config detected. Starting interactive initialization first, then running enable and start."
+        )
 
     def test_run_start_skips_init_notice_when_config_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -460,6 +512,7 @@ class NssTests(unittest.TestCase):
 class RequireCommandTests(unittest.TestCase):
     def test_require_command_shows_windows_openssl_hint(self):
         with (
+            lang_env("zh"),
             mock.patch.object(olb_cli.shutil, "which", return_value=None),
             mock.patch.object(olb_cli, "detect_os", return_value="windows"),
         ):
@@ -489,7 +542,7 @@ class StopProxyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = make_paths(Path(tmp))
 
-            with mock.patch.object(olb_cli.console, "print") as console_print:
+            with lang_env("zh"), mock.patch.object(olb_cli.console, "print") as console_print:
                 exit_code = olb_cli.stop_proxy(paths)
 
         self.assertEqual(exit_code, 0)
@@ -502,6 +555,7 @@ class StopProxyTests(unittest.TestCase):
             (paths.root / "bridge.pid").write_text("456\n", encoding="utf-8")
 
             with (
+                lang_env("zh"),
                 mock.patch.object(olb_cli, "running_bridge_pid", return_value=456),
                 mock.patch.object(olb_cli, "stop_signal") as stop_signal,
                 mock.patch.object(olb_cli, "wait_for_process_exit", side_effect=[True]) as wait_for_process_exit,
@@ -513,6 +567,16 @@ class StopProxyTests(unittest.TestCase):
         stop_signal.assert_called_once_with(456)
         wait_for_process_exit.assert_called_once_with(456, 5)
         console_print.assert_called_once_with("bridge 已停止（PID 456）")
+
+    def test_stop_proxy_uses_english_output_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+
+            with lang_env("en"), mock.patch.object(olb_cli.console, "print") as console_print:
+                exit_code = olb_cli.stop_proxy(paths)
+
+        self.assertEqual(exit_code, 0)
+        console_print.assert_called_once_with("bridge is not running")
 
     def test_main_stop_runs_stop_flow(self):
         paths = make_paths(Path("/tmp/olb-test"))
@@ -528,6 +592,7 @@ class StopProxyTests(unittest.TestCase):
 
     def test_run_command_shows_windows_openssl_hint_on_file_not_found(self):
         with (
+            lang_env("zh"),
             mock.patch.object(olb_cli.subprocess, "run", side_effect=FileNotFoundError),
             mock.patch.object(olb_cli.shutil, "which", return_value=None),
             mock.patch.object(olb_cli, "detect_os", return_value="windows"),

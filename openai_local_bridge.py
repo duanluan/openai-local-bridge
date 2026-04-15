@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
+from olb_i18n import SUPPORTED_LANGUAGES, apply_language_override, install_argparse_i18n, t
 import requests
 
 
@@ -120,11 +121,11 @@ def build_settings() -> dict[str, Any]:
     reasoning_effort_format = os.environ.get("OLB_REASONING_EFFORT_FORMAT", "openai").strip().lower() or "openai"
 
     if not isinstance(model_map, dict):
-        raise ValueError("OLB_MODEL_MAP_JSON must be a JSON object")
+        raise ValueError(t("model_map_must_be_object"))
     if not isinstance(exposed, list):
-        raise ValueError("OLB_EXPOSED_MODELS_JSON must be a JSON array")
+        raise ValueError(t("exposed_models_must_be_array"))
     if reasoning_effort_format not in {"openai", "flat", "both"}:
-        raise ValueError("OLB_REASONING_EFFORT_FORMAT must be one of: openai, flat, both")
+        raise ValueError(t("reasoning_format_invalid"))
 
     force_stream = None
     if force_stream_raw:
@@ -368,10 +369,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cert", required=True)
-    parser.add_argument("--key", required=True)
-    parser.add_argument("--pid-file")
+    argv = list([] if argv is None else argv)
+    apply_language_override(argv)
+    install_argparse_i18n()
+    parser = argparse.ArgumentParser(description=t("bridge_description"))
+    parser.add_argument("--lang", choices=list(SUPPORTED_LANGUAGES), help=t("language_arg_help"))
+    parser.add_argument("--cert", required=True, help=t("bridge_cert_help"))
+    parser.add_argument("--key", required=True, help=t("bridge_key_help"))
+    parser.add_argument("--pid-file", help=t("bridge_pid_file_help"))
     return parser.parse_args(argv)
 
 
@@ -410,7 +415,7 @@ def pid_file_guard(pid_file: str | None):
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_pid = read_pid_file(path)
     if existing_pid is not None and existing_pid != os.getpid() and process_exists(existing_pid):
-        raise StartupError(f"bridge already running (pid {existing_pid})")
+        raise StartupError(t("bridge_already_running", pid=existing_pid))
 
     path.write_text(f"{os.getpid()}\n", encoding="utf-8")
     try:
@@ -448,13 +453,11 @@ def create_server() -> ThreadingHTTPServer:
     try:
         return ThreadingHTTPServer((host, port), ProxyHandler)
     except PermissionError as exc:
-        raise StartupError(
-            f"cannot bind https listener on {host}:{port}; "
-            "choose OLB_LISTEN_PORT>=1024 or run with elevated privileges"
-        ) from exc
+        raise StartupError(t("bridge_bind_error", host=host, port=port)) from exc
 
 
 def main(argv: list[str] | None = None) -> int:
+    apply_language_override(list(sys.argv[1:] if argv is None else argv))
     args = parse_args(argv)
 
     logging.basicConfig(

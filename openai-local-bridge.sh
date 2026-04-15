@@ -4,6 +4,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+language() {
+  local raw="${OLB_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}"
+  case "${raw%%.*}" in
+    zh*|ZH*)
+      printf 'zh'
+      ;;
+    *)
+      printf 'en'
+      ;;
+  esac
+}
+
+text() {
+  local lang
+  lang="$(language)"
+  case "${lang}:$1" in
+    zh:missing_runtime) printf '缺少命令：uv、python3 或 python' ;;
+    en:missing_runtime) printf 'missing command: uv, python3, or python' ;;
+  esac
+}
+
 run_cli() {
   if command -v uv >/dev/null 2>&1; then
     (cd "${SCRIPT_DIR}" && exec uv run olb "$@")
@@ -15,7 +36,7 @@ run_cli() {
   elif command -v python >/dev/null 2>&1; then
     python_bin="python"
   else
-    printf 'missing command: uv, python3, or python\n' >&2
+    printf '%s\n' "$(text missing_runtime)" >&2
     exit 1
   fi
 

@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from olb_i18n import (
+    SUPPORTED_LANGUAGES,
+    apply_language_override,
+    install_argparse_i18n,
+    t,
+    translate_status_label,
+    translate_status_value,
+)
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -74,7 +82,7 @@ def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.2.6"
+        return "0.2.7"
 
 
 def detect_os() -> str:
@@ -166,8 +174,8 @@ def require_command(name: str) -> str:
     if path:
         return path
     if name == "openssl" and detect_os() == "windows":
-        raise CliError("missing command: openssl; Windows 请先安装 OpenSSL，并确认 openssl 已加入 PATH，再重新执行 olb enable / olb start")
-    raise CliError(f"missing command: {name}")
+        raise CliError(t("missing_command_openssl_windows"))
+    raise CliError(t("missing_command", name=name))
 
 
 def run_command(
@@ -190,13 +198,13 @@ def run_command(
         detail = detail.strip()
         if detail:
             raise CliError(detail) from exc
-        raise CliError(f"command failed: {' '.join(command)}") from exc
+        raise CliError(t("command_failed", command=" ".join(command))) from exc
     except FileNotFoundError as exc:
         try:
             require_command(command[0])
         except CliError as missing:
             raise missing from exc
-        raise CliError(f"missing command: {command[0]}") from exc
+        raise CliError(t("missing_command", name=command[0])) from exc
 
 
 def run_privileged(command: list[str], *, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
@@ -242,7 +250,7 @@ def reasoning_effort_choices(default_effort: str) -> list[str]:
 
 def prompt_reasoning_effort(default_effort: str) -> str:
     return Prompt.ask(
-        "推理强度",
+        t("reasoning_effort_label"),
         choices=reasoning_effort_choices(default_effort),
         default=default_effort,
     ).strip()
@@ -325,48 +333,48 @@ def validate_upstream(config: dict[str, Any]) -> None:
     target = get_target_host()
     upstream = str(config.get("upstream_base", "")).rstrip("/")
     if not upstream:
-        raise CliError("OLB_UPSTREAM_BASE is required")
+        raise CliError(t("upstream_base_required"))
 
     parsed = urlparse(upstream)
     if not parsed.scheme or not parsed.netloc:
-        raise CliError("invalid OLB_UPSTREAM_BASE")
+        raise CliError(t("invalid_upstream_base"))
     if parsed.hostname == target:
-        raise CliError("OLB_UPSTREAM_BASE host must not equal OLB_TARGET_HOST")
+        raise CliError(t("upstream_base_host_conflict"))
 
     upstream_model = str(config.get("upstream_model", "")).strip()
     if upstream_model in BAD_MODEL_VALUES:
-        raise CliError("replace OLB_UPSTREAM_MODEL with the real upstream model id")
+        raise CliError(t("replace_upstream_model_placeholder"))
 
     model_map_raw = json.dumps(config.get("model_map", {}), ensure_ascii=False).lower()
     if "your-model-id" in model_map_raw or "你的上游模型id" in model_map_raw:
-        raise CliError("replace OLB_MODEL_MAP_JSON placeholder with the real upstream model id")
+        raise CliError(t("replace_model_map_placeholder"))
 
 
 def prompt_for_config(existing: dict[str, Any]) -> dict[str, Any]:
-    console.print(Panel.fit("首次启动会写入你的上游配置，之后可随时重新执行 olb init 修改。示例值仅用于演示格式；如果提示里出现你自己的地址或参数，那就是当前已保存值。", title=APP_TITLE))
+    console.print(Panel.fit(t("config_intro"), title=APP_TITLE))
 
     old_base = str(existing.get("upstream_base", "")).strip()
     if old_base:
-        base_prompt = "Base URL（回车保留当前已保存值）"
+        base_prompt = t("base_prompt_saved")
         default_base = old_base
     else:
-        base_prompt = "Base URL（默认示例值仅作格式参考）"
+        base_prompt = t("base_prompt_default")
         default_base = "https://your-openai-compatible.example/v1"
     base_url = Prompt.ask(base_prompt, default=default_base).strip()
 
     old_key = str(existing.get("upstream_key", ""))
     if old_key:
-        entered_key = Prompt.ask(f"API Key（留空保留当前已保存值 {mask_secret(old_key)}）", password=True, default="").strip()
+        entered_key = Prompt.ask(t("api_key_keep", masked=mask_secret(old_key)), password=True, default="").strip()
         api_key = entered_key or old_key
     else:
-        api_key = Prompt.ask("API Key", password=True).strip()
+        api_key = Prompt.ask(t("api_key_prompt"), password=True).strip()
 
     old_effort = str(existing.get("reasoning_effort", "")).strip()
     default_effort = old_effort or DEFAULT_REASONING_EFFORT
     if old_effort:
-        reasoning_prompt = "推理强度（回车保留当前已保存值）"
+        reasoning_prompt = t("reasoning_prompt_saved")
     else:
-        reasoning_prompt = "推理强度（默认值）"
+        reasoning_prompt = t("reasoning_prompt_default")
     reasoning_effort = Prompt.ask(
         reasoning_prompt,
         choices=reasoning_effort_choices(default_effort),
@@ -388,7 +396,7 @@ def prompt_for_config(existing: dict[str, Any]) -> dict[str, Any]:
 
     validate_upstream(config)
     if not config["upstream_key"]:
-        raise CliError("OLB_UPSTREAM_KEY is required")
+        raise CliError(t("upstream_key_required"))
     return config
 
 
@@ -399,10 +407,10 @@ def ensure_config(paths: AppPaths, *, interactive: bool) -> dict[str, Any]:
         validate_upstream(config)
         return config
     if not interactive:
-        raise CliError(f"missing config: {paths.config_file}")
+        raise CliError(t("missing_config", path=paths.config_file))
     config = prompt_for_config(config)
     save_config(paths, config)
-    console.print(f"配置已保存到 [bold]{paths.config_file}[/bold]")
+    console.print(t("config_saved", path=paths.config_file))
     return config
 
 
@@ -503,7 +511,7 @@ def install_ca(paths: AppPaths) -> None:
     if system == "windows":
         require_command("certutil")
         run_command(["certutil", "-user", "-addstore", "Root", str(paths.root_ca_cert)])
-        console.print("根证书已导入 CurrentUser\\Root")
+        console.print(t("root_ca_imported_windows"))
         return
 
     strategy = detect_ca_strategy()
@@ -518,7 +526,7 @@ def install_ca(paths: AppPaths) -> None:
             "/Library/Keychains/System.keychain",
             str(paths.root_ca_cert),
         ])
-        console.print("根证书已导入系统钥匙串")
+        console.print(t("root_ca_imported_macos"))
         return
 
     if strategy == "trust":
@@ -529,7 +537,7 @@ def install_ca(paths: AppPaths) -> None:
             run_privileged(["update-ca-trust", "extract"])
         else:
             run_privileged(["trust", "extract-compat"])
-        console.print("根证书已通过 trust 导入")
+        console.print(t("root_ca_imported_trust"))
         return
 
     if strategy == "update-ca-certificates":
@@ -538,7 +546,7 @@ def install_ca(paths: AppPaths) -> None:
         run_privileged(["install", "-d", "-m", "0755", str(anchor_dir)])
         run_privileged(["install", "-m", "0644", str(paths.root_ca_cert), str(anchor_file)])
         run_privileged(["update-ca-certificates"])
-        console.print(f"根证书已写入 {anchor_file}")
+        console.print(t("root_ca_written", path=anchor_file))
         return
 
     if strategy == "update-ca-trust":
@@ -547,16 +555,16 @@ def install_ca(paths: AppPaths) -> None:
         run_privileged(["install", "-d", "-m", "0755", str(anchor_dir)])
         run_privileged(["install", "-m", "0644", str(paths.root_ca_cert), str(anchor_file)])
         run_privileged(["update-ca-trust", "extract"])
-        console.print(f"根证书已写入 {anchor_file}")
+        console.print(t("root_ca_written", path=anchor_file))
         return
 
-    raise CliError("unable to install CA automatically on this distribution")
+    raise CliError(t("auto_ca_unsupported"))
 
 
 def install_nss(paths: AppPaths) -> None:
     system = detect_os()
     if system in {"windows", "macos"}:
-        console.print("当前平台无需额外导入 NSS")
+        console.print(t("nss_not_needed"))
         return
 
     require_command("certutil")
@@ -569,7 +577,7 @@ def install_nss(paths: AppPaths) -> None:
 
     run_command(["certutil", "-d", nss_db, "-D", "-n", APP_SLUG], check=False, capture_output=True)
     run_command(["certutil", "-d", nss_db, "-A", "-t", "C,,", "-n", APP_SLUG, "-i", str(paths.root_ca_cert)])
-    console.print(f"根证书已导入 {nss_db}")
+    console.print(t("nss_imported", path=nss_db))
 
 
 def get_hosts_file() -> Path:
@@ -629,7 +637,7 @@ def install_hosts() -> None:
     cleaned = strip_hosts_entries(existing)
     block = "\n".join([HOSTS_BEGIN, f"{get_hosts_ip()} {get_target_host()}", HOSTS_END]) + "\n"
     write_hosts(cleaned + block)
-    console.print(f"hosts 已写入 {hosts_file}")
+    console.print(t("hosts_written", path=hosts_file))
 
 
 def remove_hosts() -> None:
@@ -637,7 +645,7 @@ def remove_hosts() -> None:
     existing = hosts_file.read_text(encoding="utf-8") if hosts_file.exists() else ""
     cleaned = strip_hosts_entries(existing)
     write_hosts(cleaned)
-    console.print(f"hosts 已从 {hosts_file} 清理")
+    console.print(t("hosts_removed", path=hosts_file))
 
 
 def listener_state(listen_host: str, listen_port: int) -> str:
@@ -701,22 +709,22 @@ def status_data(paths: AppPaths) -> dict[str, str]:
 
 def print_status(paths: AppPaths) -> None:
     data = status_data(paths)
-    table = Table(title="OpenAI Local Bridge 状态")
-    table.add_column("项")
-    table.add_column("值")
+    table = Table(title=t("status_title"))
+    table.add_column(t("table_item"))
+    table.add_column(t("table_value"))
     for key, value in data.items():
-        table.add_row(key, value)
+        table.add_row(translate_status_label(key), translate_status_value(value))
     console.print(table)
 
 
 def show_config(paths: AppPaths) -> None:
     config = load_config(paths)
     if not config:
-        console.print(f"尚未创建配置文件：{paths.config_file}")
+        console.print(t("config_missing", path=paths.config_file))
         return
-    table = Table(title="当前配置")
-    table.add_column("项")
-    table.add_column("值")
+    table = Table(title=t("config_title"))
+    table.add_column(t("table_item"))
+    table.add_column(t("table_value"))
     for key in ["upstream_base", "reasoning_effort", "reasoning_effort_format", "upstream_model"]:
         table.add_row(key, str(config.get(key, "")))
     table.add_row("upstream_key", mask_secret(str(config.get("upstream_key", ""))))
@@ -726,7 +734,7 @@ def show_config(paths: AppPaths) -> None:
 
 def split_sudo_command(command: list[str]) -> tuple[list[str], list[str]]:
     if not command or command[0] != "sudo":
-        raise ValueError("command must start with sudo")
+        raise ValueError(t("sudo_command_required"))
     index = 1
     while index < len(command) and command[index].startswith("-"):
         index += 1
@@ -750,7 +758,7 @@ def wait_for_background_start(paths: AppPaths, process: subprocess.Popen[str] | 
     while time.monotonic() < deadline:
         pid = running_bridge_pid(paths)
         if pid is not None:
-            console.print(f"bridge 已在后台运行，PID={pid}，日志={log_path}")
+            console.print(t("bridge_running_background", pid=pid, log_path=log_path))
             return 0
 
         if process is not None:
@@ -764,12 +772,12 @@ def wait_for_background_start(paths: AppPaths, process: subprocess.Popen[str] | 
                 if lines:
                     detail = lines[-1]
             if detail:
-                raise CliError(f"bridge 启动失败：{detail}")
-            raise CliError(f"bridge 启动失败，退出码 {return_code}")
+                raise CliError(t("bridge_start_failed_detail", detail=detail))
+            raise CliError(t("bridge_start_failed_exit", code=return_code))
 
         time.sleep(0.2)
 
-    raise CliError(f"bridge 启动超时，请查看日志：{log_path}")
+    raise CliError(t("bridge_start_timeout", log_path=log_path))
 
 
 def stop_signal(pid: int) -> None:
@@ -804,7 +812,7 @@ def wait_for_process_exit(pid: int, timeout: float) -> bool:
 def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = False) -> int:
     existing_pid = running_bridge_pid(paths)
     if existing_pid is not None:
-        raise CliError(f"bridge already running (pid {existing_pid})")
+        raise CliError(t("bridge_already_running", pid=existing_pid))
 
     validate_upstream(config)
     domain_crt, domain_key = ensure_domain_cert(paths)
@@ -815,8 +823,14 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
     command = build_proxy_command(domain_crt, domain_key, env, pid_file=pid_path)
     console.print(
         Panel.fit(
-            f"target_host={get_target_host()}\nlisten={listen_host}:{listen_port}\nupstream={config['upstream_base']}\nmode={'background' if background else 'foreground'}",
-            title="启动桥接器",
+            t(
+                "bridge_start_panel_body",
+                target_host=get_target_host(),
+                listen=f"{listen_host}:{listen_port}",
+                upstream=config["upstream_base"],
+                mode=t("mode_background") if background else t("mode_foreground"),
+            ),
+            title=t("bridge_start_panel_title"),
         )
     )
 
@@ -851,25 +865,25 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
 def stop_proxy(paths: AppPaths) -> int:
     pid = running_bridge_pid(paths)
     if pid is None:
-        console.print("bridge 未运行")
+        console.print(t("bridge_not_running"))
         return 0
 
     stop_signal(pid)
     if not wait_for_process_exit(pid, 5):
         force_stop_signal(pid)
         if not wait_for_process_exit(pid, 2):
-            raise CliError(f"无法停止 bridge（PID {pid}）")
+            raise CliError(t("cannot_stop_bridge", pid=pid))
 
     bridge_pid_file(paths).unlink(missing_ok=True)
-    console.print(f"bridge 已停止（PID {pid}）")
+    console.print(t("bridge_stopped", pid=pid))
     return 0
 
 
 def run_init(paths: AppPaths) -> int:
     config = prompt_for_config(load_config(paths))
     save_config(paths, config)
-    console.print(f"配置已保存到 [bold]{paths.config_file}[/bold]")
-    if Confirm.ask("现在展示当前配置吗？", default=True):
+    console.print(t("config_saved", path=paths.config_file))
+    if Confirm.ask(t("show_config_after_init"), default=True):
         show_config(paths)
     return 0
 
@@ -888,7 +902,7 @@ def run_disable() -> int:
 
 def run_start(paths: AppPaths, *, background: bool = False) -> int:
     if not paths.config_file.exists():
-        console.print("未检测到配置，先进入初始化。初始化完成后会继续执行 enable 和 start。")
+        console.print(t("missing_config_start_notice"))
     config = ensure_config(paths, interactive=True)
     run_enable(paths)
     return start_proxy(paths, config, background=background)
@@ -899,14 +913,31 @@ def run_stop(paths: AppPaths) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="olb")
-    subparsers = parser.add_subparsers(dest="command")
+    install_argparse_i18n()
+    parser = argparse.ArgumentParser(prog="olb", description=t("cli_description"))
+    parser.add_argument("--lang", choices=list(SUPPORTED_LANGUAGES), help=t("language_arg_help"))
+    subparsers = parser.add_subparsers(dest="command", title=t("subcommands_title"))
 
-    for name in ["init", "enable", "disable", "status", "config", "config-path", "bootstrap-ca", "install-ca", "install-nss", "install-hosts", "remove-hosts", "version", "stop"]:
-        subparsers.add_parser(name)
+    command_specs = [
+        ("init", "cmd_init_help"),
+        ("enable", "cmd_enable_help"),
+        ("disable", "cmd_disable_help"),
+        ("status", "cmd_status_help"),
+        ("config", "cmd_config_help"),
+        ("config-path", "cmd_config_path_help"),
+        ("bootstrap-ca", "cmd_bootstrap_ca_help"),
+        ("install-ca", "cmd_install_ca_help"),
+        ("install-nss", "cmd_install_nss_help"),
+        ("install-hosts", "cmd_install_hosts_help"),
+        ("remove-hosts", "cmd_remove_hosts_help"),
+        ("version", "cmd_version_help"),
+        ("stop", "cmd_stop_help"),
+    ]
+    for name, help_key in command_specs:
+        subparsers.add_parser(name, help=t(help_key), description=t(help_key))
 
-    start_parser = subparsers.add_parser("start")
-    start_parser.add_argument("--background", action="store_true", help="run bridge in background")
+    start_parser = subparsers.add_parser("start", help=t("cmd_start_help"), description=t("cmd_start_help"))
+    start_parser.add_argument("--background", action="store_true", help=t("start_background_help"))
 
     return parser
 
@@ -917,6 +948,7 @@ def default_command(paths: AppPaths) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    apply_language_override(argv)
     if argv and argv[0] == INTERNAL_BRIDGE_COMMAND:
         return run_embedded_bridge(argv[1:])
 
@@ -968,10 +1000,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
     except CliError as exc:
-        console.print(f"[bold red]error:[/bold red] {exc}")
+        console.print(f"[bold red]{t('error_label')}[/bold red] {exc}")
         return 1
     except KeyboardInterrupt:
-        console.print("已取消")
+        console.print(t("cancelled"))
         return 130
 
 

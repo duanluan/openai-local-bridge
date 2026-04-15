@@ -8,8 +8,8 @@ const installer = require('../npm/install.js');
 
 test('downloadUrl uses release asset for linux x64', () => {
   assert.equal(
-    installer.downloadUrl('0.2.6', 'linux', 'x64'),
-    'https://github.com/duanluan/openai-local-bridge/releases/download/v0.2.6/olb-linux-x86_64',
+    installer.downloadUrl('0.2.7', 'linux', 'x64'),
+    'https://github.com/duanluan/openai-local-bridge/releases/download/v0.2.7/olb-linux-x86_64',
   );
 });
 
@@ -27,6 +27,13 @@ test('packageSpecFor returns windows binary path', () => {
 
 test('packageSpecFor rejects unsupported platform', () => {
   assert.throws(() => installer.packageSpecFor('linux', 'arm64'), /unsupported platform/);
+});
+
+test('packageSpecFor localizes unsupported platform errors', () => {
+  assert.throws(
+    () => installer.packageSpecFor('linux', 'arm64', { OLB_LANG: 'zh_CN' }),
+    /不支持的平台/,
+  );
 });
 
 test('moveFile falls back to copy when rename crosses devices', async (t) => {

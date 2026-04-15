@@ -6,6 +6,7 @@ const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 
+const { t } = require('./i18n.js');
 const packageRoot = path.resolve(__dirname, '..');
 const packageJson = require('../package.json');
 const platformPackages = require('./platforms.json');
@@ -14,16 +15,16 @@ function platformKey(platform = process.platform, arch = process.arch) {
   return `${platform}-${arch}`;
 }
 
-function packageSpecFor(platform = process.platform, arch = process.arch) {
+function packageSpecFor(platform = process.platform, arch = process.arch, env = process.env) {
   const spec = platformPackages[platformKey(platform, arch)];
   if (!spec) {
-    throw new Error(`unsupported platform: ${platform}/${arch}`);
+    throw new Error(t('unsupportedPlatform', { platform, arch }, env));
   }
   return spec;
 }
 
-function downloadUrl(version = packageJson.version, platform = process.platform, arch = process.arch) {
-  const spec = packageSpecFor(platform, arch);
+function downloadUrl(version = packageJson.version, platform = process.platform, arch = process.arch, env = process.env) {
+  const spec = packageSpecFor(platform, arch, env);
   return `https://github.com/duanluan/openai-local-bridge/releases/download/v${version}/${spec.releaseAsset}`;
 }
 
@@ -45,7 +46,7 @@ function downloadFile(url, destination) {
 
         if (response.statusCode !== 200) {
           response.resume();
-          reject(new Error(`download failed: ${url} (${response.statusCode})`));
+          reject(new Error(t('downloadFailed', { url, statusCode: response.statusCode })));
           return;
         }
 
