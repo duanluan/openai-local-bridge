@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import signal
+import shlex
 import shutil
 import socket
 import subprocess
@@ -26,6 +27,7 @@ from rich.table import Table
 
 APP_SLUG = "openai-local-bridge"
 APP_TITLE = "OpenAI Local Bridge"
+INTERNAL_BRIDGE_COMMAND = "__bridge_internal__"
 DEFAULT_TARGET_HOST = "api.openai.com"
 DEFAULT_HOSTS_IP = "127.0.0.1"
 DEFAULT_LISTEN_HOST = "127.0.0.1"
@@ -72,7 +74,7 @@ def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.1.0"
+        return "0.2.6"
 
 
 def detect_os() -> str:
@@ -258,6 +260,18 @@ def preserved_olb_env_names(env: dict[str, str]) -> str:
     return ",".join(sorted(name for name in env if name.startswith("OLB_")))
 
 
+def cli_entry_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, "-m", "olb_cli"]
+
+
+def run_embedded_bridge(argv: list[str]) -> int:
+    import openai_local_bridge
+
+    return openai_local_bridge.main(argv)
+
+
 def build_proxy_command(
     domain_crt: Path,
     domain_key: Path,
@@ -265,7 +279,14 @@ def build_proxy_command(
     *,
     pid_file: Path | None = None,
 ) -> list[str]:
-    command = [sys.executable, "-m", "openai_local_bridge", "--cert", str(domain_crt), "--key", str(domain_key)]
+    command = [
+        *cli_entry_command(),
+        INTERNAL_BRIDGE_COMMAND,
+        "--cert",
+        str(domain_crt),
+        "--key",
+        str(domain_key),
+    ]
     if pid_file is not None:
         command.extend(["--pid-file", str(pid_file)])
     if not should_elevate_for_listener(env.get("OLB_LISTEN_PORT", DEFAULT_LISTEN_PORT)):
@@ -703,12 +724,28 @@ def show_config(paths: AppPaths) -> None:
     console.print(table)
 
 
+def split_sudo_command(command: list[str]) -> tuple[list[str], list[str]]:
+    if not command or command[0] != "sudo":
+        raise ValueError("command must start with sudo")
+    index = 1
+    while index < len(command) and command[index].startswith("-"):
+        index += 1
+    return command[:index], command[index:]
+
+
 def prepare_background_launch(command: list[str]) -> None:
-    if command and command[0] == "sudo":
-        run_command(["sudo", "-v"])
+    if not command or command[0] != "sudo":
+        return
+    run_command(["sudo", "-v"])
 
 
-def wait_for_background_start(paths: AppPaths, process: subprocess.Popen[str], log_path: Path) -> int:
+def launch_background_with_sudo(command: list[str], env: dict[str, str], log_path: Path) -> None:
+    sudo_prefix, inner_command = split_sudo_command(command)
+    shell_command = f"nohup {shlex.join(inner_command)} >> {shlex.quote(str(log_path))} 2>&1 </dev/null &"
+    run_command(["sudo", "-n", *sudo_prefix[1:], "sh", "-c", shell_command], env=env)
+
+
+def wait_for_background_start(paths: AppPaths, process: subprocess.Popen[str] | None, log_path: Path) -> int:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         pid = running_bridge_pid(paths)
@@ -716,7 +753,10 @@ def wait_for_background_start(paths: AppPaths, process: subprocess.Popen[str], l
             console.print(f"bridge 已在后台运行，PID={pid}，日志={log_path}")
             return 0
 
-        return_code = process.poll()
+        if process is not None:
+            return_code = process.poll()
+        else:
+            return_code = None
         if return_code is not None:
             detail = ""
             if log_path.exists():
@@ -781,10 +821,14 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
     )
 
     if background:
-        prepare_background_launch(command)
         paths.root.mkdir(parents=True, exist_ok=True)
         log_path = bridge_log_file(paths)
-        with log_path.open("a", encoding="utf-8") as log_file:
+        log_path.write_text("", encoding="utf-8")
+        if command and command[0] == "sudo" and detect_os() != "windows":
+            prepare_background_launch(command)
+            launch_background_with_sudo(command, env, log_path)
+            return wait_for_background_start(paths, None, log_path)
+        with log_path.open("w", encoding="utf-8") as log_file:
             popen_kwargs: dict[str, Any] = {
                 "env": env,
                 "stdin": subprocess.DEVNULL,
@@ -871,10 +915,14 @@ def default_command(paths: AppPaths) -> str:
     return "status" if paths.config_file.exists() else "init"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == INTERNAL_BRIDGE_COMMAND:
+        return run_embedded_bridge(argv[1:])
+
     paths = get_paths()
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     command = args.command or default_command(paths)
 
     try:

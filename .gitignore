@@ -8,5 +8,7 @@ __pycache__/
 .venv/
 dist/
 build/
+release/
+olb.spec
 *.egg-info/
 ca/

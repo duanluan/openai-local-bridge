@@ -1,0 +1,26 @@
+{
+  "darwin-arm64": {
+    "releaseAsset": "olb-macos-arm64",
+    "binaryPath": "bin/olb",
+    "os": "darwin",
+    "cpu": "arm64"
+  },
+  "darwin-x64": {
+    "releaseAsset": "olb-macos-x86_64",
+    "binaryPath": "bin/olb",
+    "os": "darwin",
+    "cpu": "x64"
+  },
+  "linux-x64": {
+    "releaseAsset": "olb-linux-x86_64",
+    "binaryPath": "bin/olb",
+    "os": "linux",
+    "cpu": "x64"
+  },
+  "win32-x64": {
+    "releaseAsset": "olb-windows-x86_64.exe",
+    "binaryPath": "bin/olb.exe",
+    "os": "win32",
+    "cpu": "x64"
+  }
+}

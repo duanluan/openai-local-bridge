@@ -48,10 +48,28 @@ class StartupTests(unittest.TestCase):
     def test_parse_args_accepts_pid_file(self):
         module = load_module()
 
-        with mock.patch.object(module.sys, "argv", ["openai_local_bridge", "--cert", "cert.pem", "--key", "key.pem", "--pid-file", "/tmp/bridge.pid"]):
-            args = module.parse_args()
+        args = module.parse_args(["--cert", "cert.pem", "--key", "key.pem", "--pid-file", "/tmp/bridge.pid"])
 
         self.assertEqual(args.pid_file, "/tmp/bridge.pid")
+
+    def test_main_accepts_explicit_argv(self):
+        module = load_module()
+        server = mock.Mock()
+        server.socket = mock.Mock()
+
+        with (
+            mock.patch.object(module, "create_server", return_value=server),
+            mock.patch.object(module.ssl, "SSLContext") as ssl_context,
+            mock.patch.object(module, "pid_file_guard"),
+            mock.patch.object(module, "install_signal_handlers", return_value={}),
+            mock.patch.object(module, "restore_signal_handlers"),
+        ):
+            ssl_context.return_value.wrap_socket.return_value = server.socket
+            exit_code = module.main(["--cert", "cert.pem", "--key", "key.pem"])
+
+        self.assertEqual(exit_code, 0)
+        server.serve_forever.assert_called_once()
+        server.server_close.assert_called_once()
 
     def test_pid_file_guard_writes_and_removes_pid_file(self):
         module = load_module()

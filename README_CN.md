@@ -21,31 +21,27 @@ openssl version
 
 ## 安装
 
-可选镜像：
-
-- `https://gitclone.com/github.com/duanluan/openai-local-bridge.git`
-- `https://wget.la/https://github.com/duanluan/openai-local-bridge.git`
-- `https://hk.gh-proxy.org/https://github.com/duanluan/openai-local-bridge.git`
-- `https://ghfast.top/https://github.com/duanluan/openai-local-bridge.git`
-- `https://githubfast.com/duanluan/openai-local-bridge.git`
+如果想直接使用自带 Python 运行时的独立二进制包，可以从 GitHub Releases 下载对应平台压缩包。此方式不再依赖本机 `Python` 或 `uv`，但执行 `olb enable` / `olb start` 仍然需要 `OpenSSL`。
 
 ### 方式 1：`uv`
 
 ```bash
-uv tool install git+https://github.com/duanluan/openai-local-bridge.git
+uv tool install openai-local-bridge
 ```
 
 ### 方式 2：`pip`
 
 ```bash
-python -m pip install --user git+https://github.com/duanluan/openai-local-bridge.git
+python -m pip install --user openai-local-bridge
 ```
 
 ### 方式 3：`npm`
 
 ```bash
-npm install -g git+https://github.com/duanluan/openai-local-bridge.git
+npm install -g @duanluan/openai-local-bridge
 ```
+
+npm 包会在安装阶段从 GitHub Releases 下载当前平台对应的独立二进制文件，所以运行时不再依赖 `Python` 或 `uv`。
 
 ### 方式 4：`curl` / PowerShell
 
@@ -60,6 +56,15 @@ Windows PowerShell：
 ```powershell
 irm https://raw.githubusercontent.com/duanluan/openai-local-bridge/main/install.ps1 | iex
 ```
+
+### 方式 5：独立二进制包
+
+从 GitHub Releases 下载对应平台压缩包，解压后直接运行 `olb`：
+
+- `olb-linux-x86_64.tar.gz`
+- `olb-macos-x86_64.tar.gz`
+- `olb-macos-arm64.tar.gz`
+- `olb-windows-x86_64.zip`
 
 ## 快速开始
 
@@ -138,7 +143,26 @@ openai-local-bridge.bat <command>
 
 这些入口最终都会转发到同一个 CLI。
 
-如果通过 GitHub 或其兼容代理使用 npm 安装，`olb` 会优先直接使用 npm 已安装到本机的包内容执行；本机有 `uv` 时优先走 `uv tool run --from <本地包目录> olb`，否则回退到 Python + `pip --user <本地包目录>`。这样运行时不需要再次访问 GitHub。
+如果通过 npm 安装，`olb` 会直接启动当前平台对应的内置二进制文件。当前支持 Linux x64、macOS x64、macOS arm64、Windows x64。
+
+## 发布
+
+发布工作流位于 [release-binaries.yml](/home/duanluan/workspaces/my/projects/openai-local-bridge/.github/workflows/release-binaries.yml)。
+
+推送发布 tag 前需要：
+
+- 在 `pyproject.toml` 和 `package.json` 中写入相同版本号
+- 在 GitHub Secrets 中配置 `PYPI_API_TOKEN` 和 `NPM_TOKEN`
+- 推送类似 `v0.2.6` 的 tag
+
+该工作流会：
+
+- 构建 Linux x64、macOS x64、macOS arm64、Windows x64 的独立二进制文件
+- 上传到 GitHub Releases
+- 发布 Python 包到 PyPI
+- 发布 npm 主包；npm 安装阶段会再从 GitHub Releases 下载对应平台的二进制文件
+
+如果 npm 发布失败，但 tag 和 GitHub Release 已经存在，可以在 Actions 页面使用 `Run workflow`，传入已有 tag（例如 `v0.2.6`）单独重试 npm 发布，而不需要再增加版本号。
 
 ## 在客户端中使用
 

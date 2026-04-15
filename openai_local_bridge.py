@@ -367,12 +367,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
     parser.add_argument("--pid-file")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def read_pid_file(path: Path) -> int | None:
@@ -454,8 +454,8 @@ def create_server() -> ThreadingHTTPServer:
         ) from exc
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if SETTINGS["debug"] else logging.INFO,
@@ -483,11 +483,12 @@ def main() -> None:
     finally:
         restore_signal_handlers(previous_handlers)
         server.server_close()
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except StartupError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None
