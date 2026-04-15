@@ -1,19 +1,23 @@
 {
-  "name": "openai-local-bridge",
-  "version": "0.1.0",
-  "description": "GitHub-installed launcher for openai-local-bridge",
+  "name": "@duanluan/openai-local-bridge",
+  "version": "0.2.6",
+  "description": "Standalone npm launcher for openai-local-bridge",
   "bin": {
     "olb": "npm/olb.js"
   },
+  "scripts": {
+    "postinstall": "node npm/install.js"
+  },
   "files": [
+    "npm/install.js",
     "npm/olb.js",
-    "pyproject.toml",
-    "olb_cli.py",
-    "openai_local_bridge.py",
-    "install.sh",
-    "install.ps1",
-    "README.md"
+    "npm/platforms.json",
+    "README.md",
+    "README_CN.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/duanluan/openai-local-bridge.git"
@@ -27,7 +31,8 @@
     "launcher",
     "openai",
     "bridge",
-    "cli"
+    "cli",
+    "binary"
   ],
   "license": "UNLICENSED"
 }

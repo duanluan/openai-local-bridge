@@ -1,0 +1,120 @@
+name: publish-npm-from-main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  statuses: write
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+
+      - name: Ensure release assets exist
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          for asset in olb-linux-x86_64 olb-macos-x86_64 olb-macos-arm64 olb-windows-x86_64.zip; do
+            url="https://github.com/duanluan/openai-local-bridge/releases/download/v${version}/${asset}"
+            code="$(curl -s -o /dev/null -w "%{http_code}" -L "${url}")"
+            if [ "${code}" != "200" ]; then
+              echo "missing release asset: ${url}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "skip ${name}@${version}"
+            exit 0
+          fi
+          publish_output="$(npm publish --access public 2>&1)"
+          publish_status=$?
+          if [ "${publish_status}" -ne 0 ]; then
+            printf '%s\n' "${publish_output}"
+            mkdir -p debug
+            {
+              echo "package=${name}"
+              echo "version=${version}"
+              echo "timestamp=$(date -u +%FT%TZ)"
+              echo
+              printf '%s\n' "${publish_output}"
+            } > debug/npm-publish-error.txt
+            sanitized="$(printf '%s' "${publish_output}" | tail -n 20 | tr '\n' ' ' | sed 's/::/%3A%3A/g')"
+            echo "::error title=npm publish failed::${sanitized}"
+            latest_log="$(ls -t ~/.npm/_logs/*-debug-0.log 2>/dev/null | head -n 1)"
+            if [ -n "${latest_log}" ]; then
+              echo "npm debug log: ${latest_log}"
+              tail -n 120 "${latest_log}" | tee -a debug/npm-publish-error.txt
+            fi
+            exit 1
+          fi
+          printf '%s\n' "${publish_output}"
+
+      - name: Ensure npm package is public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          npm access public "${name}"
+
+      - name: Commit npm publish failure details
+        if: failure()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f debug/npm-publish-error.txt ]; then
+            exit 0
+          fi
+          api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/debug/npm-publish-error.txt"
+          content="$(base64 -w 0 debug/npm-publish-error.txt)"
+          current_sha="$(curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "${api_url}" | node -e "let raw=''; process.stdin.on('data', d => raw += d); process.stdin.on('end', () => { try { const data = JSON.parse(raw); process.stdout.write(data.sha || ''); } catch { process.stdout.write(''); } });")"
+          payload="$(node -e "const fs=require('fs'); const payload={message:'[skip ci] debug: 记录 npm 发布失败详情', content:process.argv[1], branch:'main'}; if (process.argv[2]) payload.sha=process.argv[2]; process.stdout.write(JSON.stringify(payload));" "${content}" "${current_sha}")"
+          curl -s -X PUT \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api_url}" \
+            -d "${payload}" >/tmp/npm_publish_debug_response.json
+
+      - name: Publish npm failure status
+        if: failure()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f debug/npm-publish-error.txt ]; then
+            exit 0
+          fi
+          description="$(tail -n 20 debug/npm-publish-error.txt | tr '\n' ' ' | sed 's/"/'\''/g' | cut -c1-140)"
+          payload="$(node -e "process.stdout.write(JSON.stringify({state:'error', context:'npm publish debug', description:process.argv[1] || 'npm publish failed'}));" "${description}")"
+          curl -s -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "${payload}" >/tmp/npm_publish_status_response.json

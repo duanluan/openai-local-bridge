@@ -21,31 +21,27 @@ openssl version
 
 ## Installation
 
-Optional mirror URLs:
-
-- `https://gitclone.com/github.com/duanluan/openai-local-bridge.git`
-- `https://wget.la/https://github.com/duanluan/openai-local-bridge.git`
-- `https://hk.gh-proxy.org/https://github.com/duanluan/openai-local-bridge.git`
-- `https://ghfast.top/https://github.com/duanluan/openai-local-bridge.git`
-- `https://githubfast.com/duanluan/openai-local-bridge.git`
+If you want a standalone binary with the Python runtime bundled, download the platform archive from GitHub Releases. Those archives do not require `Python` or `uv`; only `OpenSSL` is still needed for `olb enable` / `olb start`.
 
 ### Method 1: `uv`
 
 ```bash
-uv tool install git+https://github.com/duanluan/openai-local-bridge.git
+uv tool install openai-local-bridge
 ```
 
 ### Method 2: `pip`
 
 ```bash
-python -m pip install --user git+https://github.com/duanluan/openai-local-bridge.git
+python -m pip install --user openai-local-bridge
 ```
 
 ### Method 3: `npm`
 
 ```bash
-npm install -g git+https://github.com/duanluan/openai-local-bridge.git
+npm install -g @duanluan/openai-local-bridge
 ```
+
+The npm package downloads the matching standalone binary from GitHub Releases during installation, so runtime use does not require `Python` or `uv`.
 
 ### Method 4: `curl` / PowerShell
 
@@ -60,6 +56,15 @@ Windows PowerShell:
 ```powershell
 irm https://raw.githubusercontent.com/duanluan/openai-local-bridge/main/install.ps1 | iex
 ```
+
+### Method 5: standalone binary
+
+Download the matching archive from GitHub Releases, then unpack and run `olb` directly:
+
+- `olb-linux-x86_64.tar.gz`
+- `olb-macos-x86_64.tar.gz`
+- `olb-macos-arm64.tar.gz`
+- `olb-windows-x86_64.zip`
 
 ## Quick Start
 
@@ -138,7 +143,26 @@ openai-local-bridge.bat <command>
 
 All of these entry points forward to the same CLI.
 
-If you install through npm from GitHub or a compatible proxy, `olb` prefers to run from the package that is already installed locally. When `uv` is available, it first tries `uv tool run --from <local package dir> olb`; otherwise it falls back to Python plus `pip --user <local package dir>`. This means runtime execution does not need to access GitHub again.
+If you install through npm, `olb` starts the bundled platform binary directly. Supported npm targets are Linux x64, macOS x64, macOS arm64, and Windows x64.
+
+## Release
+
+The release workflow lives in [.github/workflows/release-binaries.yml](/home/duanluan/workspaces/my/projects/openai-local-bridge/.github/workflows/release-binaries.yml).
+
+Before pushing a release tag:
+
+- set matching versions in `pyproject.toml` and `package.json`
+- configure GitHub secrets `PYPI_API_TOKEN` and `NPM_TOKEN`
+- push a tag such as `v0.2.6`
+
+When the workflow runs on that tag, it:
+
+- builds standalone binaries for Linux x64, macOS x64, macOS arm64, and Windows x64
+- uploads those binaries to GitHub Releases
+- publishes the Python package to PyPI
+- publishes the root npm package; the npm installer downloads the matching binary from GitHub Releases
+
+If npm publishing fails but the tag and GitHub Release already exist, use the workflow's `Run workflow` button and pass the existing tag such as `v0.2.6` to retry npm publishing without creating a new version.
 
 ## Using It in a Client
 

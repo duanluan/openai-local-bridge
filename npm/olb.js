@@ -4,57 +4,60 @@ const { spawnSync } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
 
-const repoUrl = 'https://github.com/duanluan/openai-local-bridge.git';
 const packageRoot = path.resolve(__dirname, '..');
-const packageRef = resolvePackageRef();
-const args = process.argv.slice(2);
+const platformPackages = require('./platforms.json');
 
-function normalizePackageRef(value) {
-  return value.trim().replace(/[`'"]/g, '').replace(/\s+/g, '');
+function platformKey(platform = process.platform, arch = process.arch) {
+  return `${platform}-${arch}`;
 }
 
-function resolvePackageRef() {
-  if (existsSync(path.join(packageRoot, 'pyproject.toml'))) {
-    return packageRoot;
+function packageSpecFor(platform = process.platform, arch = process.arch) {
+  const spec = platformPackages[platformKey(platform, arch)];
+  if (!spec) {
+    throw new Error(`unsupported platform: ${platform}/${arch}`);
   }
-  return normalizePackageRef(`git+${repoUrl}`);
+  return spec;
 }
 
-function hasCommand(command) {
-  const probe = process.platform === 'win32' ? 'where' : 'command';
-  const probeArgs = process.platform === 'win32' ? [command] : ['-v', command];
-  const result = spawnSync(probe, probeArgs, { stdio: 'ignore', shell: process.platform !== 'win32' });
-  return result.status === 0;
+function resolveBinaryPath(options = {}) {
+  const override = options.binaryPath || process.env.OLB_BINARY_PATH;
+  if (override) {
+    return override;
+  }
+
+  const spec = packageSpecFor(options.platform, options.arch);
+  const binaryPath = path.join(packageRoot, 'npm', spec.binaryPath);
+  if (!existsSync(binaryPath)) {
+    throw new Error(`missing binary: ${binaryPath}; rerun npm install openai-local-bridge`);
+  }
+  return binaryPath;
 }
 
-function run(command, commandArgs) {
-  const result = spawnSync(command, commandArgs, { stdio: 'inherit' });
+function runBinary(binaryPath, args = process.argv.slice(2)) {
+  const result = spawnSync(binaryPath, args, { stdio: 'inherit' });
   if (result.error) {
-    return { status: 1, error: result.error };
+    throw result.error;
   }
-  return { status: result.status ?? 1 };
+  return result.status ?? 1;
 }
 
-function runPythonFlow(pythonCommand) {
-  const pipResult = run(pythonCommand, ['-m', 'pip', 'install', '--user', '--upgrade', packageRef]);
-  if (pipResult.status !== 0) {
-    process.exit(pipResult.status);
-  }
-
-  const cliResult = run(pythonCommand, ['-m', 'olb_cli', ...args]);
-  process.exit(cliResult.status);
-}
-
-if (hasCommand('uv')) {
-  const uvResult = run('uv', ['tool', 'run', '--from', packageRef, 'olb', ...args]);
-  process.exit(uvResult.status);
-}
-
-for (const pythonCommand of process.platform === 'win32' ? ['py', 'python'] : ['python3', 'python']) {
-  if (hasCommand(pythonCommand)) {
-    runPythonFlow(pythonCommand);
+function main(args = process.argv.slice(2)) {
+  try {
+    const binaryPath = resolveBinaryPath();
+    process.exit(runBinary(binaryPath, args));
+  } catch (error) {
+    console.error(error.message || String(error));
+    process.exit(1);
   }
 }
 
-console.error('missing command: uv, python3, or python');
-process.exit(1);
+module.exports = {
+  packageSpecFor,
+  platformKey,
+  resolveBinaryPath,
+  runBinary,
+};
+
+if (require.main === module) {
+  main();
+}

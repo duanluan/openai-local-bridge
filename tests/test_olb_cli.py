@@ -81,7 +81,7 @@ class VersionTests(unittest.TestCase):
 
     def test_app_version_falls_back_when_metadata_missing(self):
         with mock.patch.object(olb_cli, "package_version", side_effect=olb_cli.PackageNotFoundError):
-            self.assertEqual(olb_cli.app_version(), "0.1.0")
+            self.assertEqual(olb_cli.app_version(), "0.2.6")
 
     def test_main_supports_version_subcommand(self):
         with (
@@ -128,6 +128,27 @@ class DefaultCommandTests(unittest.TestCase):
             paths.root.mkdir(parents=True, exist_ok=True)
             paths.config_file.write_text("{}\n", encoding="utf-8")
             self.assertEqual(olb_cli.default_command(paths), "status")
+
+
+class InternalBridgeTests(unittest.TestCase):
+    def test_cli_entry_command_uses_module_in_python_mode(self):
+        with mock.patch.object(olb_cli.sys, "frozen", False, create=True):
+            command = olb_cli.cli_entry_command()
+
+        self.assertEqual(command, [olb_cli.sys.executable, "-m", "olb_cli"])
+
+    def test_cli_entry_command_uses_current_binary_when_frozen(self):
+        with mock.patch.object(olb_cli.sys, "frozen", True, create=True):
+            command = olb_cli.cli_entry_command()
+
+        self.assertEqual(command, [olb_cli.sys.executable])
+
+    def test_main_dispatches_internal_bridge_command(self):
+        with mock.patch.object(olb_cli, "run_embedded_bridge", return_value=0) as run_embedded_bridge:
+            exit_code = olb_cli.main([olb_cli.INTERNAL_BRIDGE_COMMAND, "--cert", "cert.pem", "--key", "key.pem"])
+
+        self.assertEqual(exit_code, 0)
+        run_embedded_bridge.assert_called_once_with(["--cert", "cert.pem", "--key", "key.pem"])
 
 
 class RunStartTests(unittest.TestCase):
@@ -223,11 +244,16 @@ class StartProxyTests(unittest.TestCase):
             mock.patch.object(olb_cli, "detect_os", return_value="linux"),
             mock.patch.object(olb_cli.os, "geteuid", return_value=1000, create=True),
             mock.patch.object(olb_cli, "require_command", return_value="/usr/bin/sudo"),
+            mock.patch.object(olb_cli, "cli_entry_command", return_value=["/tmp/olb"]),
         ):
             command = olb_cli.build_proxy_command(Path("/tmp/test.crt"), Path("/tmp/test.key"), env)
 
         self.assertEqual(command[0], "sudo")
         self.assertTrue(command[1].startswith("--preserve-env="))
+        self.assertEqual(
+            command[2:8],
+            ["/tmp/olb", olb_cli.INTERNAL_BRIDGE_COMMAND, "--cert", "/tmp/test.crt", "--key", "/tmp/test.key"],
+        )
         preserved = set(command[1].split("=", 1)[1].split(","))
         self.assertEqual(
             preserved,
@@ -251,10 +277,23 @@ class StartProxyTests(unittest.TestCase):
         with (
             mock.patch.object(olb_cli, "detect_os", return_value="linux"),
             mock.patch.object(olb_cli.os, "geteuid", return_value=1000, create=True),
+            mock.patch.object(olb_cli, "cli_entry_command", return_value=["python3", "-m", "olb_cli"]),
         ):
             command = olb_cli.build_proxy_command(Path("/tmp/test.crt"), Path("/tmp/test.key"), env)
 
-        self.assertEqual(command[:3], [olb_cli.sys.executable, "-m", "openai_local_bridge"])
+        self.assertEqual(
+            command,
+            [
+                "python3",
+                "-m",
+                "olb_cli",
+                olb_cli.INTERNAL_BRIDGE_COMMAND,
+                "--cert",
+                "/tmp/test.crt",
+                "--key",
+                "/tmp/test.key",
+            ],
+        )
 
     def test_build_proxy_command_appends_pid_file(self):
         env = {
@@ -266,6 +305,7 @@ class StartProxyTests(unittest.TestCase):
         with (
             mock.patch.object(olb_cli, "detect_os", return_value="linux"),
             mock.patch.object(olb_cli.os, "geteuid", return_value=1000, create=True),
+            mock.patch.object(olb_cli, "cli_entry_command", return_value=["python3", "-m", "olb_cli"]),
         ):
             command = olb_cli.build_proxy_command(
                 Path("/tmp/test.crt"),
@@ -300,7 +340,6 @@ class StartProxyTests(unittest.TestCase):
                 mock.patch.object(olb_cli, "ensure_domain_cert", return_value=(Path("/tmp/test.crt"), Path("/tmp/test.key"))),
                 mock.patch.object(olb_cli, "env_from_config", return_value={"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "8443"}),
                 mock.patch.object(olb_cli, "build_proxy_command", return_value=["python", "-m", "openai_local_bridge"]) as build_proxy_command,
-                mock.patch.object(olb_cli, "prepare_background_launch"),
                 mock.patch.object(olb_cli.subprocess, "Popen", return_value=process) as popen,
                 mock.patch.object(olb_cli, "wait_for_background_start", return_value=0) as wait_for_background_start,
             ):
@@ -315,6 +354,63 @@ class StartProxyTests(unittest.TestCase):
         )
         popen.assert_called_once()
         wait_for_background_start.assert_called_once_with(paths, process, paths.root / "bridge.log")
+
+    def test_start_proxy_background_with_sudo_reuses_same_prompt_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with (
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=None),
+                mock.patch.object(olb_cli, "validate_upstream"),
+                mock.patch.object(olb_cli, "ensure_domain_cert", return_value=(Path("/tmp/test.crt"), Path("/tmp/test.key"))),
+                mock.patch.object(
+                    olb_cli,
+                    "env_from_config",
+                    return_value={"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "443"},
+                ),
+                mock.patch.object(
+                    olb_cli,
+                    "build_proxy_command",
+                    return_value=["sudo", "--preserve-env=OLB_LISTEN_PORT", "python", "-m", "olb_cli"],
+                ),
+                mock.patch.object(olb_cli, "detect_os", return_value="linux"),
+                mock.patch.object(olb_cli, "prepare_background_launch") as prepare_background_launch,
+                mock.patch.object(olb_cli, "launch_background_with_sudo") as launch_background_with_sudo,
+                mock.patch.object(olb_cli.subprocess, "Popen") as popen,
+                mock.patch.object(olb_cli, "wait_for_background_start", return_value=0) as wait_for_background_start,
+            ):
+                exit_code = olb_cli.start_proxy(paths, config, background=True)
+
+        self.assertEqual(exit_code, 0)
+        prepare_background_launch.assert_called_once_with(["sudo", "--preserve-env=OLB_LISTEN_PORT", "python", "-m", "olb_cli"])
+        launch_background_with_sudo.assert_called_once_with(
+            ["sudo", "--preserve-env=OLB_LISTEN_PORT", "python", "-m", "olb_cli"],
+            {"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "443"},
+            paths.root / "bridge.log",
+        )
+        popen.assert_not_called()
+        wait_for_background_start.assert_called_once_with(paths, None, paths.root / "bridge.log")
+
+    def test_prepare_background_launch_refreshes_sudo_credentials(self):
+        with mock.patch.object(olb_cli, "run_command") as run_command:
+            olb_cli.prepare_background_launch(["sudo", "--preserve-env=OLB_LISTEN_PORT", "python"])
+
+        run_command.assert_called_once_with(["sudo", "-v"])
+
+    def test_launch_background_with_sudo_uses_non_interactive_sudo_after_refresh(self):
+        with mock.patch.object(olb_cli, "run_command") as run_command:
+            olb_cli.launch_background_with_sudo(
+                ["sudo", "--preserve-env=OLB_LISTEN_PORT", "python", "-m", "olb_cli"],
+                {"OLB_LISTEN_PORT": "443"},
+                Path("/tmp/bridge.log"),
+            )
+
+        run_command.assert_called_once()
+        self.assertEqual(
+            run_command.call_args.args[0][:4],
+            ["sudo", "-n", "--preserve-env=OLB_LISTEN_PORT", "sh"],
+        )
 
 
 class NssTests(unittest.TestCase):
