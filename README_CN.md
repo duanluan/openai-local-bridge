@@ -75,16 +75,30 @@ olb start
 olb start --background
 ```
 
+后台日志会写到配置目录下的 `bridge.log`，并自动按 1 MiB 轮转，保留 3 个备份文件。
+
 如果本机还没有配置，`olb start` 会先进入初始化，再继续执行启用和启动；交互式会采集：
 
 - `Base URL`
 - `API Key`
 - `推理强度`
 
-如果你只想单独修改配置，可以执行：
+如果你只想单独修改当前账号配置，可以执行：
 
 ```bash
 olb init
+```
+
+如果你要新增一个上游账号，可以执行：
+
+```bash
+olb account add work
+```
+
+如果你要切换 `olb start` 使用的当前账号，可以执行：
+
+```bash
+olb account use work
 ```
 
 关闭接管：
@@ -104,9 +118,15 @@ olb stop
 命令说明：
 
 - `olb`：未配置时进入初始化，已配置时显示状态
-- `init`：首次初始化或重新配置
-- `config`：查看当前配置
+- `init`：首次初始化或重新配置当前账号
+- `config`：查看当前账号配置
 - `config-path`：查看配置文件路径
+- `a`：`account` 的简写
+- `account list` / `account ls`：查看已保存账号
+- `account add <name>`：新增账号
+- `account edit [name]`：修改当前账号或指定账号
+- `account delete <name>`：删除账号
+- `account use <name>`：使用指定账号作为当前账号
 - `status`：查看当前状态
 - `enable`：安装证书、处理 hosts，并在支持的平台上处理 NSS
 - `disable`：取消 hosts 接管
@@ -222,7 +242,7 @@ openssl version
 
 ## 配置文件
 
-CLI 会把配置写到用户目录下的配置文件中。
+CLI 会把配置写到用户目录下的配置文件中，里面会保存当前账号和全部已保存账号。
 
 查看路径：
 

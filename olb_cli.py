@@ -24,6 +24,7 @@ from olb_i18n import (
     apply_language_override,
     install_argparse_i18n,
     t,
+    translate_field_label,
     translate_status_label,
     translate_status_value,
 )
@@ -42,11 +43,27 @@ DEFAULT_LISTEN_HOST = "127.0.0.1"
 DEFAULT_LISTEN_PORT = "443"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_REASONING_FORMAT = "openai"
+DEFAULT_ACCOUNT_NAME = "default"
+DEFAULT_BACKGROUND_LOG_MAX_BYTES = "1048576"
+DEFAULT_BACKGROUND_LOG_BACKUP_COUNT = "3"
 HOSTS_BEGIN = f"# BEGIN {APP_SLUG}"
 HOSTS_END = f"# END {APP_SLUG}"
 ROOT_CA_NAME = f"{APP_SLUG}-root-ca"
 BAD_MODEL_VALUES = {"your-model-id", "你的上游模型ID", "your_model_id"}
 REASONING_EFFORT_CHOICES = ["minimal", "low", "medium", "high", "xhigh"]
+ACCOUNT_FIELDS = (
+    "upstream_base",
+    "upstream_key",
+    "reasoning_effort",
+    "reasoning_effort_format",
+    "upstream_model",
+    "model_map",
+    "exposed_models",
+    "force_stream_mode",
+    "upstream_insecure",
+    "debug",
+)
+REQUIRED_ACCOUNT_FIELDS = ("upstream_base", "upstream_key", "reasoning_effort")
 
 console = Console()
 
@@ -82,7 +99,7 @@ def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.2.7"
+        return "0.2.8"
 
 
 def detect_os() -> str:
@@ -216,15 +233,149 @@ def run_privileged(command: list[str], *, capture_output: bool = False) -> subpr
     return run_command(["sudo", *command], capture_output=capture_output)
 
 
+def normalize_account_name(raw: Any) -> str:
+    return str(raw).strip() if raw is not None else ""
+
+
+def extract_account_config(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    return {key: raw.get(key) for key in ACCOUNT_FIELDS if key in raw}
+
+
+def has_account_config(raw: dict[str, Any]) -> bool:
+    return any(key in raw for key in ACCOUNT_FIELDS)
+
+
+def normalize_config(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+
+    accounts_raw = raw.get("accounts")
+    if isinstance(accounts_raw, dict):
+        accounts: dict[str, dict[str, Any]] = {}
+        for name, account_raw in accounts_raw.items():
+            account_name = normalize_account_name(name)
+            if not account_name:
+                continue
+            accounts[account_name] = extract_account_config(account_raw)
+        active_name = normalize_account_name(raw.get("active_account"))
+        if active_name not in accounts and accounts:
+            active_name = next(iter(accounts))
+        return {"active_account": active_name, "accounts": accounts}
+
+    if not has_account_config(raw):
+        return {}
+
+    return {
+        "active_account": DEFAULT_ACCOUNT_NAME,
+        "accounts": {
+            DEFAULT_ACCOUNT_NAME: extract_account_config(raw),
+        },
+    }
+
+
+def accounts_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    accounts = config.get("accounts", {})
+    return accounts if isinstance(accounts, dict) else {}
+
+
+def account_names(config: dict[str, Any]) -> list[str]:
+    return list(accounts_map(config).keys())
+
+
+def active_account_name(config: dict[str, Any]) -> str:
+    accounts = accounts_map(config)
+    active_name = normalize_account_name(config.get("active_account"))
+    if active_name in accounts:
+        return active_name
+    if accounts:
+        return next(iter(accounts))
+    return ""
+
+
+def account_config(config: dict[str, Any], name: str) -> dict[str, Any]:
+    return dict(accounts_map(config).get(name, {}))
+
+
+def active_account_config(config: dict[str, Any]) -> dict[str, Any]:
+    current_name = active_account_name(config)
+    if not current_name:
+        return {}
+    return account_config(config, current_name)
+
+
+def require_account_name(name: str) -> str:
+    account_name = normalize_account_name(name)
+    if not account_name:
+        raise CliError(t("account_name_required"))
+    return account_name
+
+
+def require_accounts(paths: AppPaths, config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    accounts = accounts_map(config)
+    if accounts:
+        return accounts
+    if paths.config_file.exists():
+        raise CliError(t("accounts_empty"))
+    raise CliError(t("config_missing", path=paths.config_file))
+
+
+def require_existing_account(paths: AppPaths, config: dict[str, Any], name: str) -> str:
+    account_name = require_account_name(name)
+    if account_name not in require_accounts(paths, config):
+        raise CliError(t("account_not_found", name=account_name))
+    return account_name
+
+
+def upsert_account(config: dict[str, Any], name: str, account: dict[str, Any], *, activate: bool = False) -> dict[str, Any]:
+    store = normalize_config(config)
+    accounts = dict(accounts_map(store))
+    accounts[name] = account
+    active_name = active_account_name(store)
+    if activate or not active_name:
+        active_name = name
+    elif active_name not in accounts:
+        active_name = next(iter(accounts))
+    return {"active_account": active_name, "accounts": accounts}
+
+
+def switch_account(config: dict[str, Any], name: str) -> dict[str, Any]:
+    store = normalize_config(config)
+    return {"active_account": name, "accounts": dict(accounts_map(store))}
+
+
+def delete_account(config: dict[str, Any], name: str) -> dict[str, Any]:
+    store = normalize_config(config)
+    accounts = dict(accounts_map(store))
+    accounts.pop(name, None)
+    active_name = active_account_name(store)
+    if active_name == name or active_name not in accounts:
+        active_name = next(iter(accounts), "")
+    return {"active_account": active_name, "accounts": accounts}
+
+
+def has_required_account_values(config: dict[str, Any]) -> bool:
+    return all(str(config.get(key, "")).strip() for key in REQUIRED_ACCOUNT_FIELDS)
+
+
 def load_config(paths: AppPaths) -> dict[str, Any]:
     if not paths.config_file.exists():
         return {}
-    return json.loads(paths.config_file.read_text(encoding="utf-8"))
+    return normalize_config(json.loads(paths.config_file.read_text(encoding="utf-8")))
 
 
 def save_config(paths: AppPaths, config: dict[str, Any]) -> None:
+    normalized = normalize_config(config)
+    if not accounts_map(normalized):
+        paths.config_file.unlink(missing_ok=True)
+        return
+    payload = {
+        "active_account": active_account_name(normalized),
+        "accounts": accounts_map(normalized),
+    }
     paths.root.mkdir(parents=True, exist_ok=True)
-    paths.config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    paths.config_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def get_target_host() -> str:
@@ -350,8 +501,8 @@ def validate_upstream(config: dict[str, Any]) -> None:
         raise CliError(t("replace_model_map_placeholder"))
 
 
-def prompt_for_config(existing: dict[str, Any]) -> dict[str, Any]:
-    console.print(Panel.fit(t("config_intro"), title=APP_TITLE))
+def prompt_for_config(existing: dict[str, Any], *, intro_key: str = "config_intro_init") -> dict[str, Any]:
+    console.print(Panel.fit(t(intro_key), title=APP_TITLE))
 
     old_base = str(existing.get("upstream_base", "")).strip()
     if old_base:
@@ -401,15 +552,16 @@ def prompt_for_config(existing: dict[str, Any]) -> dict[str, Any]:
 
 
 def ensure_config(paths: AppPaths, *, interactive: bool) -> dict[str, Any]:
-    config = load_config(paths)
-    required = ["upstream_base", "upstream_key", "reasoning_effort"]
-    if all(str(config.get(key, "")).strip() for key in required):
+    store = load_config(paths)
+    current_name = active_account_name(store) or DEFAULT_ACCOUNT_NAME
+    config = active_account_config(store)
+    if has_required_account_values(config):
         validate_upstream(config)
         return config
     if not interactive:
         raise CliError(t("missing_config", path=paths.config_file))
     config = prompt_for_config(config)
-    save_config(paths, config)
+    save_config(paths, upsert_account(store, current_name, config, activate=True))
     console.print(t("config_saved", path=paths.config_file))
     return config
 
@@ -665,6 +817,7 @@ def status_data(paths: AppPaths) -> dict[str, str]:
     ip = get_hosts_ip()
     listen_host = get_optional_env("OLB_LISTEN_HOST", DEFAULT_LISTEN_HOST)
     listen_port = int(get_optional_env("OLB_LISTEN_PORT", DEFAULT_LISTEN_PORT))
+    config = load_config(paths)
     hosts_file = get_hosts_file()
     hosts_state = "disabled"
 
@@ -703,6 +856,7 @@ def status_data(paths: AppPaths) -> dict[str, str]:
         "nss_db": nss_db,
         "listener": listener_state(listen_host, listen_port),
         "listen_addr": f"{listen_host}:{listen_port}",
+        "active_account": active_account_name(config) or "not_configured",
         "config": str(paths.config_file),
     }
 
@@ -718,17 +872,45 @@ def print_status(paths: AppPaths) -> None:
 
 
 def show_config(paths: AppPaths) -> None:
-    config = load_config(paths)
+    store = load_config(paths)
+    current_name = active_account_name(store)
+    config = active_account_config(store)
     if not config:
+        if paths.config_file.exists():
+            console.print(t("accounts_empty"))
+            return
         console.print(t("config_missing", path=paths.config_file))
         return
     table = Table(title=t("config_title"))
     table.add_column(t("table_item"))
     table.add_column(t("table_value"))
+    table.add_row(translate_field_label("active_account"), current_name)
+    table.add_row(translate_field_label("accounts"), ", ".join(account_names(store)))
     for key in ["upstream_base", "reasoning_effort", "reasoning_effort_format", "upstream_model"]:
-        table.add_row(key, str(config.get(key, "")))
-    table.add_row("upstream_key", mask_secret(str(config.get("upstream_key", ""))))
-    table.add_row("config_path", str(paths.config_file))
+        table.add_row(translate_field_label(key), str(config.get(key, "")))
+    table.add_row(translate_field_label("upstream_key"), mask_secret(str(config.get("upstream_key", ""))))
+    table.add_row(translate_field_label("config_path"), str(paths.config_file))
+    console.print(table)
+
+
+def show_accounts(paths: AppPaths) -> None:
+    config = load_config(paths)
+    accounts = require_accounts(paths, config)
+    current_name = active_account_name(config)
+    table = Table(title=t("accounts_title"))
+    table.add_column(t("account_name_arg_help"))
+    table.add_column(translate_field_label("active_account"))
+    table.add_column(translate_field_label("upstream_base"))
+    table.add_column(translate_field_label("reasoning_effort"))
+    table.add_column(translate_field_label("upstream_key"))
+    for name, account in accounts.items():
+        table.add_row(
+            name,
+            "*" if name == current_name else "",
+            str(account.get("upstream_base", "")),
+            str(account.get("reasoning_effort", "")),
+            mask_secret(str(account.get("upstream_key", ""))),
+        )
     console.print(table)
 
 
@@ -749,7 +931,7 @@ def prepare_background_launch(command: list[str]) -> None:
 
 def launch_background_with_sudo(command: list[str], env: dict[str, str], log_path: Path) -> None:
     sudo_prefix, inner_command = split_sudo_command(command)
-    shell_command = f"nohup {shlex.join(inner_command)} >> {shlex.quote(str(log_path))} 2>&1 </dev/null &"
+    shell_command = f"nohup {shlex.join(inner_command)} >/dev/null 2>&1 </dev/null &"
     run_command(["sudo", "-n", *sudo_prefix[1:], "sh", "-c", shell_command], env=env)
 
 
@@ -837,25 +1019,26 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
     if background:
         paths.root.mkdir(parents=True, exist_ok=True)
         log_path = bridge_log_file(paths)
-        log_path.write_text("", encoding="utf-8")
+        env["OLB_LOG_PATH"] = str(log_path)
+        env.setdefault("OLB_LOG_MAX_BYTES", DEFAULT_BACKGROUND_LOG_MAX_BYTES)
+        env.setdefault("OLB_LOG_BACKUP_COUNT", DEFAULT_BACKGROUND_LOG_BACKUP_COUNT)
         if command and command[0] == "sudo" and detect_os() != "windows":
             prepare_background_launch(command)
             launch_background_with_sudo(command, env, log_path)
             return wait_for_background_start(paths, None, log_path)
-        with log_path.open("w", encoding="utf-8") as log_file:
-            popen_kwargs: dict[str, Any] = {
-                "env": env,
-                "stdin": subprocess.DEVNULL,
-                "stdout": log_file,
-                "stderr": subprocess.STDOUT,
-            }
-            if detect_os() == "windows":
-                popen_kwargs["creationflags"] = (
-                    getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                )
-            else:
-                popen_kwargs["start_new_session"] = True
-            process = subprocess.Popen(command, **popen_kwargs)
+        popen_kwargs: dict[str, Any] = {
+            "env": env,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if detect_os() == "windows":
+            popen_kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+        process = subprocess.Popen(command, **popen_kwargs)
         return wait_for_background_start(paths, process, log_path)
 
     result = subprocess.run(command, env=env)
@@ -880,11 +1063,67 @@ def stop_proxy(paths: AppPaths) -> int:
 
 
 def run_init(paths: AppPaths) -> int:
-    config = prompt_for_config(load_config(paths))
-    save_config(paths, config)
+    store = load_config(paths)
+    current_name = active_account_name(store) or DEFAULT_ACCOUNT_NAME
+    config = prompt_for_config(active_account_config(store), intro_key="config_intro_init")
+    save_config(paths, upsert_account(store, current_name, config, activate=True))
     console.print(t("config_saved", path=paths.config_file))
     if Confirm.ask(t("show_config_after_init"), default=True):
         show_config(paths)
+    return 0
+
+
+def run_account_list(paths: AppPaths) -> int:
+    show_accounts(paths)
+    return 0
+
+
+def run_account_add(paths: AppPaths, name: str) -> int:
+    store = load_config(paths)
+    account_name = require_account_name(name)
+    if account_name in accounts_map(store):
+        raise CliError(t("account_exists", name=account_name))
+    config = prompt_for_config({}, intro_key="config_intro_add")
+    save_config(paths, upsert_account(store, account_name, config, activate=not active_account_name(store)))
+    console.print(t("account_added", name=account_name))
+    return 0
+
+
+def run_account_edit(paths: AppPaths, name: str | None = None) -> int:
+    store = load_config(paths)
+    accounts = require_accounts(paths, store)
+    account_name = active_account_name(store) if name is None else require_account_name(name)
+    if account_name not in accounts:
+        raise CliError(t("account_not_found", name=account_name))
+    config = prompt_for_config(account_config(store, account_name), intro_key="config_intro_edit")
+    save_config(paths, upsert_account(store, account_name, config))
+    console.print(t("account_updated", name=account_name))
+    return 0
+
+
+def run_account_delete(paths: AppPaths, name: str) -> int:
+    store = load_config(paths)
+    account_name = require_existing_account(paths, store, name)
+    current_name = active_account_name(store)
+    updated = delete_account(store, account_name)
+    save_config(paths, updated)
+    console.print(t("account_deleted", name=account_name))
+    next_active = active_account_name(updated)
+    if current_name == account_name and next_active:
+        console.print(t("account_switched", name=next_active))
+    return 0
+
+
+def run_account_switch(paths: AppPaths, name: str) -> int:
+    store = load_config(paths)
+    account_name = require_existing_account(paths, store, name)
+    updated = switch_account(store, account_name)
+    save_config(paths, updated)
+    console.print(t("account_switched", name=account_name))
+    pid = running_bridge_pid(paths)
+    if pid is not None and Confirm.ask(t("restart_bridge_after_account_switch", pid=pid, name=account_name), default=True):
+        stop_proxy(paths)
+        start_proxy(paths, account_config(updated, account_name), background=True)
     return 0
 
 
@@ -939,6 +1178,45 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser = subparsers.add_parser("start", help=t("cmd_start_help"), description=t("cmd_start_help"))
     start_parser.add_argument("--background", action="store_true", help=t("start_background_help"))
 
+    account_parser = subparsers.add_parser(
+        "account",
+        aliases=["a"],
+        help=t("cmd_account_help"),
+        description=t("cmd_account_help"),
+    )
+    account_subparsers = account_parser.add_subparsers(dest="account_command", title=t("subcommands_title"))
+    account_subparsers.add_parser(
+        "list",
+        aliases=["ls"],
+        help=t("cmd_account_list_help"),
+        description=t("cmd_account_list_help"),
+    )
+
+    add_parser = account_subparsers.add_parser("add", help=t("cmd_account_add_help"), description=t("cmd_account_add_help"))
+    add_parser.add_argument("name", help=t("account_name_arg_help"))
+
+    edit_parser = account_subparsers.add_parser(
+        "edit",
+        help=t("cmd_account_edit_help"),
+        description=t("cmd_account_edit_help"),
+    )
+    edit_parser.add_argument("name", nargs="?", help=t("account_name_arg_help"))
+
+    delete_parser = account_subparsers.add_parser(
+        "delete",
+        help=t("cmd_account_delete_help"),
+        description=t("cmd_account_delete_help"),
+    )
+    delete_parser.add_argument("name", help=t("account_name_arg_help"))
+
+    switch_parser = account_subparsers.add_parser(
+        "use",
+        aliases=["switch"],
+        help=t("cmd_account_switch_help"),
+        description=t("cmd_account_switch_help"),
+    )
+    switch_parser.add_argument("name", help=t("account_name_arg_help"))
+
     return parser
 
 
@@ -975,6 +1253,20 @@ def main(argv: list[str] | None = None) -> int:
         if command == "config-path":
             console.print(str(paths.config_file))
             return 0
+        if command in {"account", "a"}:
+            account_command = args.account_command or "list"
+            if account_command in {"list", "ls"}:
+                return run_account_list(paths)
+            if account_command == "add":
+                return run_account_add(paths, args.name)
+            if account_command == "edit":
+                return run_account_edit(paths, args.name)
+            if account_command == "delete":
+                return run_account_delete(paths, args.name)
+            if account_command in {"use", "switch"}:
+                return run_account_switch(paths, args.name)
+            parser.print_help()
+            return 1
         if command == "bootstrap-ca":
             ensure_domain_cert(paths)
             console.print(str(paths.root_ca_cert))

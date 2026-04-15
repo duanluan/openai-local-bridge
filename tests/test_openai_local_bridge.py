@@ -114,6 +114,31 @@ class StartupTests(unittest.TestCase):
             "无法绑定 127.0.0.1:443 的 HTTPS 监听；请把 OLB_LISTEN_PORT 设为 >=1024，或使用提权方式运行",
         )
 
+    def test_configure_logging_uses_rotating_file_handler_when_log_path_is_set(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "logs" / "bridge.log"
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "OLB_LOG_PATH": str(log_path),
+                        "OLB_LOG_MAX_BYTES": "2048",
+                        "OLB_LOG_BACKUP_COUNT": "5",
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(module, "RotatingFileHandler", return_value="handler") as rotating_handler,
+                mock.patch.object(module.logging, "basicConfig") as basic_config,
+            ):
+                module.configure_logging()
+
+        rotating_handler.assert_called_once_with(log_path, maxBytes=2048, backupCount=5, encoding="utf-8")
+        self.assertEqual(basic_config.call_args.kwargs["handlers"], ["handler"])
+        self.assertTrue(basic_config.call_args.kwargs["force"])
+
 
 if __name__ == "__main__":
     unittest.main()

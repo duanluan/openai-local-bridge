@@ -2,6 +2,7 @@
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import signal
@@ -45,6 +46,43 @@ def env_json(name: str, default: Any) -> Any:
     if not raw:
         return default
     return json.loads(raw)
+
+
+def env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def background_log_path() -> Path | None:
+    raw = os.environ.get("OLB_LOG_PATH", "").strip()
+    return Path(raw) if raw else None
+
+
+def configure_logging() -> None:
+    config_kwargs = {
+        "level": logging.DEBUG if SETTINGS["debug"] else logging.INFO,
+        "format": "[%(asctime)s] %(levelname)s %(message)s",
+        "force": True,
+    }
+    log_path = background_log_path()
+    if log_path is None:
+        logging.basicConfig(**config_kwargs)
+        return
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=env_int("OLB_LOG_MAX_BYTES", 1024 * 1024),
+        backupCount=env_int("OLB_LOG_BACKUP_COUNT", 3),
+        encoding="utf-8",
+    )
+    logging.basicConfig(handlers=[handler], **config_kwargs)
 
 
 def build_upstream_url(base_url: str, raw_path: str) -> str:
@@ -459,11 +497,7 @@ def create_server() -> ThreadingHTTPServer:
 def main(argv: list[str] | None = None) -> int:
     apply_language_override(list(sys.argv[1:] if argv is None else argv))
     args = parse_args(argv)
-
-    logging.basicConfig(
-        level=logging.DEBUG if SETTINGS["debug"] else logging.INFO,
-        format="[%(asctime)s] %(levelname)s %(message)s",
-    )
+    configure_logging()
 
     server = create_server()
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -493,5 +527,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except StartupError as exc:
-        print(str(exc), file=sys.stderr)
+        if background_log_path() is not None:
+            LOG.error("%s", exc)
+        else:
+            print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None

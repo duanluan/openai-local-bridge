@@ -75,16 +75,30 @@ Run it in the background:
 olb start --background
 ```
 
+Background logs are written to `bridge.log` under the config directory and rotate automatically at 1 MiB with 3 backup files.
+
 If the machine has not been configured yet, `olb start` first runs initialization, then continues with enablement and startup. In interactive mode, it asks for:
 
 - `Base URL`
 - `API Key`
 - `Reasoning effort`
 
-If you only want to update the configuration, run:
+If you only want to update the active account configuration, run:
 
 ```bash
 olb init
+```
+
+To add another upstream account:
+
+```bash
+olb account add work
+```
+
+To use another active account for `olb start`:
+
+```bash
+olb account use work
 ```
 
 To stop the takeover:
@@ -104,9 +118,15 @@ olb stop
 Command overview:
 
 - `olb`: runs initialization when no config exists; otherwise shows the current status
-- `init`: initial setup or reconfiguration
-- `config`: show the current configuration
+- `init`: initial setup or reconfiguration of the active account
+- `config`: show the active account configuration
 - `config-path`: show the configuration file path
+- `a`: shorthand for `account`
+- `account list` / `account ls`: list saved accounts
+- `account add <name>`: add a new account
+- `account edit [name]`: edit the active account or the named account
+- `account delete <name>`: delete an account
+- `account use <name>`: use the selected account as active
 - `status`: show the current status
 - `enable`: install certificates, update hosts, and manage NSS on supported platforms
 - `disable`: remove the hosts takeover
@@ -139,25 +159,6 @@ openai-local-bridge.bat <command>
 All of these entry points forward to the same CLI.
 
 If you install through npm, `olb` starts the bundled platform binary directly. Supported npm targets are Linux x64, macOS x64, macOS arm64, and Windows x64.
-
-## Release
-
-The release workflow lives in [.github/workflows/release-binaries.yml](/home/duanluan/workspaces/my/projects/openai-local-bridge/.github/workflows/release-binaries.yml).
-
-Before pushing a release tag:
-
-- set matching versions in `pyproject.toml` and `package.json`
-- configure GitHub secrets `PYPI_API_TOKEN` and `NPM_TOKEN`
-- push a tag such as `v0.2.6`
-
-When the workflow runs on that tag, it:
-
-- builds standalone binaries for Linux x64, macOS x64, macOS arm64, and Windows x64
-- uploads those binaries to GitHub Releases
-- publishes the Python package to PyPI
-- publishes the root npm package; the npm installer downloads the matching binary from GitHub Releases
-
-If npm publishing fails but the tag and GitHub Release already exist, use the workflow's `Run workflow` button and pass the existing tag such as `v0.2.6` to retry npm publishing without creating a new version.
 
 ## Using It in a Client
 
@@ -241,7 +242,7 @@ If you use the default port `443`, the system may require elevated privileges. F
 
 ## Configuration File
 
-The CLI writes its configuration to a file under your user configuration directory.
+The CLI writes its configuration to a file under your user configuration directory. The file stores the active account plus all saved upstream accounts.
 
 View the path:
 
