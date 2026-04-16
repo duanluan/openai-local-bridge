@@ -8,8 +8,8 @@ const installer = require('../npm/install.js');
 
 test('downloadUrl uses release asset for linux x64', () => {
   assert.equal(
-    installer.downloadUrl('0.2.8', 'linux', 'x64'),
-    'https://github.com/duanluan/openai-local-bridge/releases/download/v0.2.8/olb-linux-x86_64',
+    installer.downloadUrl('0.2.9', 'linux', 'x64'),
+    'https://github.com/duanluan/openai-local-bridge/releases/download/v0.2.9/olb-linux-x86_64',
   );
 });
 

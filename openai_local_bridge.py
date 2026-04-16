@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import ctypes
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -20,6 +21,10 @@ import requests
 LOG = logging.getLogger("openai_local_bridge")
 SESSION = requests.Session()
 SESSION.trust_env = False
+WINDOWS_ERROR_ACCESS_DENIED = 5
+WINDOWS_ERROR_INVALID_PARAMETER = 87
+WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WINDOWS_STILL_ACTIVE = 259
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -433,7 +438,47 @@ def read_pid_file(path: Path) -> int | None:
     return pid if pid > 0 else None
 
 
+def windows_kernel32() -> Any:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    kernel32.GetExitCodeProcess.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    return kernel32
+
+
+def windows_last_error() -> int:
+    getter = getattr(ctypes, "get_last_error", None)
+    return getter() if getter is not None else 0
+
+
+def windows_process_exists(pid: int) -> bool:
+    kernel32 = windows_kernel32()
+    handle = kernel32.OpenProcess(WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        error = windows_last_error()
+        if error == WINDOWS_ERROR_ACCESS_DENIED:
+            return True
+        if error == WINDOWS_ERROR_INVALID_PARAMETER:
+            return False
+        raise OSError(error, f"OpenProcess failed with winerror {error}")
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            error = windows_last_error()
+            if error == WINDOWS_ERROR_ACCESS_DENIED:
+                return True
+            raise OSError(error, f"GetExitCodeProcess failed with winerror {error}")
+        return exit_code.value == WINDOWS_STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def process_exists(pid: int) -> bool:
+    if os.name == "nt":
+        return windows_process_exists(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

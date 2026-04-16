@@ -1,6 +1,6 @@
 {
   "name": "@duanluan/openai-local-bridge",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Standalone npm launcher for openai-local-bridge",
   "bin": {
     "olb": "npm/olb.js"

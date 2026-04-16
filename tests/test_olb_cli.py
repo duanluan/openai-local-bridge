@@ -40,6 +40,7 @@ class PromptForConfigTests(unittest.TestCase):
             ["minimal", "low", "medium", "high", "xhigh"],
         )
         self.assertEqual(ask.call_args_list[2].kwargs["default"], "medium")
+        self.assertNotIn("password", ask.call_args_list[1].kwargs)
 
     def test_prompt_for_config_marks_saved_values_clearly(self):
         existing = {
@@ -58,6 +59,7 @@ class PromptForConfigTests(unittest.TestCase):
         self.assertEqual(config["upstream_key"], "secret-key")
         self.assertEqual(ask.call_args_list[0].args[0], "Base URL（回车保留当前已保存值）")
         self.assertIn("留空保留当前已保存值", ask.call_args_list[1].args[0])
+        self.assertNotIn("password", ask.call_args_list[1].kwargs)
         self.assertEqual(ask.call_args_list[2].args[0], "推理强度（回车保留当前已保存值）")
         self.assertEqual(ask.call_args_list[2].kwargs["default"], "high")
 
@@ -100,7 +102,7 @@ class VersionTests(unittest.TestCase):
 
     def test_app_version_falls_back_when_metadata_missing(self):
         with mock.patch.object(olb_cli, "package_version", side_effect=olb_cli.PackageNotFoundError):
-            self.assertEqual(olb_cli.app_version(), "0.2.8")
+            self.assertEqual(olb_cli.app_version(), "0.2.9")
 
     def test_main_supports_version_subcommand(self):
         with (
@@ -722,6 +724,25 @@ class StartProxyTests(unittest.TestCase):
             },
         )
 
+    def test_build_proxy_command_preserves_pyinstaller_reset_environment(self):
+        env = {
+            "OLB_LISTEN_PORT": "443",
+            "OLB_UPSTREAM_BASE": "https://example.com/v1",
+            "OLB_UPSTREAM_KEY": "test-key",
+            olb_cli.PYINSTALLER_RESET_ENVIRONMENT: "1",
+        }
+
+        with (
+            mock.patch.object(olb_cli, "detect_os", return_value="linux"),
+            mock.patch.object(olb_cli.os, "geteuid", return_value=1000, create=True),
+            mock.patch.object(olb_cli, "require_command", return_value="/usr/bin/sudo"),
+            mock.patch.object(olb_cli, "cli_entry_command", return_value=["/tmp/olb"]),
+        ):
+            command = olb_cli.build_proxy_command(Path("/tmp/test.crt"), Path("/tmp/test.key"), env)
+
+        preserved = set(command[1].split("=", 1)[1].split(","))
+        self.assertIn(olb_cli.PYINSTALLER_RESET_ENVIRONMENT, preserved)
+
     def test_build_proxy_command_skips_sudo_for_unprivileged_port(self):
         env = {
             "OLB_LISTEN_PORT": "8443",
@@ -817,6 +838,62 @@ class StartProxyTests(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["stdout"], subprocess.DEVNULL)
         self.assertEqual(popen.call_args.kwargs["stderr"], subprocess.DEVNULL)
         wait_for_background_start.assert_called_once_with(paths, process, paths.root / "bridge.log")
+
+    def test_start_proxy_background_frozen_resets_pyinstaller_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+            process = mock.Mock(spec=subprocess.Popen)
+            process.poll.return_value = None
+
+            with (
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=None),
+                mock.patch.object(olb_cli, "validate_upstream"),
+                mock.patch.object(olb_cli, "ensure_domain_cert", return_value=(Path("/tmp/test.crt"), Path("/tmp/test.key"))),
+                mock.patch.object(olb_cli, "env_from_config", return_value={"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "8443"}),
+                mock.patch.object(olb_cli, "build_proxy_command", return_value=["/tmp/olb.exe"]) as build_proxy_command,
+                mock.patch.object(olb_cli.subprocess, "Popen", return_value=process) as popen,
+                mock.patch.object(olb_cli, "wait_for_background_start", return_value=0),
+                mock.patch.object(olb_cli.sys, "frozen", True, create=True),
+            ):
+                exit_code = olb_cli.start_proxy(paths, config, background=True)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            build_proxy_command.call_args.args[2][olb_cli.PYINSTALLER_RESET_ENVIRONMENT],
+            "1",
+        )
+        self.assertEqual(
+            popen.call_args.kwargs["env"][olb_cli.PYINSTALLER_RESET_ENVIRONMENT],
+            "1",
+        )
+
+    def test_start_proxy_background_windows_hides_console_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+            process = mock.Mock(spec=subprocess.Popen)
+            process.poll.return_value = None
+
+            with (
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=None),
+                mock.patch.object(olb_cli, "validate_upstream"),
+                mock.patch.object(olb_cli, "ensure_domain_cert", return_value=(Path("/tmp/test.crt"), Path("/tmp/test.key"))),
+                mock.patch.object(olb_cli, "env_from_config", return_value={"OLB_LISTEN_HOST": "127.0.0.1", "OLB_LISTEN_PORT": "8443"}),
+                mock.patch.object(olb_cli, "build_proxy_command", return_value=["/tmp/olb.exe"]),
+                mock.patch.object(olb_cli.subprocess, "Popen", return_value=process) as popen,
+                mock.patch.object(olb_cli, "wait_for_background_start", return_value=0),
+                mock.patch.object(olb_cli, "detect_os", return_value="windows"),
+                mock.patch.object(olb_cli.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
+                mock.patch.object(olb_cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, create=True),
+            ):
+                exit_code = olb_cli.start_proxy(paths, config, background=True)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            popen.call_args.kwargs["creationflags"],
+            0x08000000 | 0x00000200,
+        )
 
     def test_start_proxy_background_with_sudo_reuses_same_prompt_flow(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -938,6 +1015,42 @@ class RequireCommandTests(unittest.TestCase):
                 olb_cli.require_command("openssl")
 
         self.assertIn("Windows 请先安装 OpenSSL", str(exc.exception))
+
+
+class ProcessExistsTests(unittest.TestCase):
+    def test_process_exists_windows_returns_false_for_invalid_parameter(self):
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.return_value = 0
+
+        with (
+            mock.patch.object(olb_cli, "detect_os", return_value="windows"),
+            mock.patch.object(olb_cli, "windows_kernel32", return_value=kernel32),
+            mock.patch.object(olb_cli, "windows_last_error", return_value=olb_cli.WINDOWS_ERROR_INVALID_PARAMETER),
+        ):
+            exists = olb_cli.process_exists(456)
+
+        self.assertFalse(exists)
+        kernel32.GetExitCodeProcess.assert_not_called()
+        kernel32.CloseHandle.assert_not_called()
+
+    def test_process_exists_windows_returns_true_for_running_process(self):
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.return_value = 123
+
+        def write_still_active(_handle, exit_code_ptr):
+            exit_code_ptr._obj.value = olb_cli.WINDOWS_STILL_ACTIVE
+            return 1
+
+        kernel32.GetExitCodeProcess.side_effect = write_still_active
+
+        with (
+            mock.patch.object(olb_cli, "detect_os", return_value="windows"),
+            mock.patch.object(olb_cli, "windows_kernel32", return_value=kernel32),
+        ):
+            exists = olb_cli.process_exists(456)
+
+        self.assertTrue(exists)
+        kernel32.CloseHandle.assert_called_once_with(123)
 
 
 class StopProxyTests(unittest.TestCase):

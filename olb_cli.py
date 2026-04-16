@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import signal
@@ -46,6 +47,7 @@ DEFAULT_REASONING_FORMAT = "openai"
 DEFAULT_ACCOUNT_NAME = "default"
 DEFAULT_BACKGROUND_LOG_MAX_BYTES = "1048576"
 DEFAULT_BACKGROUND_LOG_BACKUP_COUNT = "3"
+PYINSTALLER_RESET_ENVIRONMENT = "PYINSTALLER_RESET_ENVIRONMENT"
 HOSTS_BEGIN = f"# BEGIN {APP_SLUG}"
 HOSTS_END = f"# END {APP_SLUG}"
 ROOT_CA_NAME = f"{APP_SLUG}-root-ca"
@@ -64,6 +66,10 @@ ACCOUNT_FIELDS = (
     "debug",
 )
 REQUIRED_ACCOUNT_FIELDS = ("upstream_base", "upstream_key", "reasoning_effort")
+WINDOWS_ERROR_ACCESS_DENIED = 5
+WINDOWS_ERROR_INVALID_PARAMETER = 87
+WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WINDOWS_STILL_ACTIVE = 259
 
 console = Console()
 
@@ -99,7 +105,7 @@ def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.2.8"
+        return "0.2.9"
 
 
 def detect_os() -> str:
@@ -153,7 +159,47 @@ def read_pid_file(path: Path) -> int | None:
     return pid if pid > 0 else None
 
 
+def windows_kernel32() -> Any:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    kernel32.GetExitCodeProcess.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    return kernel32
+
+
+def windows_last_error() -> int:
+    getter = getattr(ctypes, "get_last_error", None)
+    return getter() if getter is not None else 0
+
+
+def windows_process_exists(pid: int) -> bool:
+    kernel32 = windows_kernel32()
+    handle = kernel32.OpenProcess(WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        error = windows_last_error()
+        if error == WINDOWS_ERROR_ACCESS_DENIED:
+            return True
+        if error == WINDOWS_ERROR_INVALID_PARAMETER:
+            return False
+        raise OSError(error, f"OpenProcess failed with winerror {error}")
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            error = windows_last_error()
+            if error == WINDOWS_ERROR_ACCESS_DENIED:
+                return True
+            raise OSError(error, f"GetExitCodeProcess failed with winerror {error}")
+        return exit_code.value == WINDOWS_STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def process_exists(pid: int) -> bool:
+    if detect_os() == "windows":
+        return windows_process_exists(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -415,8 +461,11 @@ def should_elevate_for_listener(listen_port: str | int) -> bool:
     return 0 < int(str(listen_port).strip()) < 1024
 
 
-def preserved_olb_env_names(env: dict[str, str]) -> str:
-    return ",".join(sorted(name for name in env if name.startswith("OLB_")))
+def preserved_env_names(env: dict[str, str]) -> str:
+    names = {name for name in env if name.startswith("OLB_")}
+    if PYINSTALLER_RESET_ENVIRONMENT in env:
+        names.add(PYINSTALLER_RESET_ENVIRONMENT)
+    return ",".join(sorted(names))
 
 
 def cli_entry_command() -> list[str]:
@@ -452,7 +501,7 @@ def build_proxy_command(
         return command
 
     require_command("sudo")
-    preserved = preserved_olb_env_names(env)
+    preserved = preserved_env_names(env)
     if preserved:
         return ["sudo", f"--preserve-env={preserved}", *command]
     return ["sudo", *command]
@@ -515,10 +564,10 @@ def prompt_for_config(existing: dict[str, Any], *, intro_key: str = "config_intr
 
     old_key = str(existing.get("upstream_key", ""))
     if old_key:
-        entered_key = Prompt.ask(t("api_key_keep", masked=mask_secret(old_key)), password=True, default="").strip()
+        entered_key = Prompt.ask(t("api_key_keep", masked=mask_secret(old_key)), default="").strip()
         api_key = entered_key or old_key
     else:
-        api_key = Prompt.ask(t("api_key_prompt"), password=True).strip()
+        api_key = Prompt.ask(t("api_key_prompt")).strip()
 
     old_effort = str(existing.get("reasoning_effort", "")).strip()
     default_effort = old_effort or DEFAULT_REASONING_EFFORT
@@ -1002,6 +1051,14 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
     listen_host = env.get("OLB_LISTEN_HOST", DEFAULT_LISTEN_HOST)
     listen_port = env.get("OLB_LISTEN_PORT", DEFAULT_LISTEN_PORT)
     pid_path = bridge_pid_file(paths)
+    if background:
+        paths.root.mkdir(parents=True, exist_ok=True)
+        log_path = bridge_log_file(paths)
+        env["OLB_LOG_PATH"] = str(log_path)
+        env.setdefault("OLB_LOG_MAX_BYTES", DEFAULT_BACKGROUND_LOG_MAX_BYTES)
+        env.setdefault("OLB_LOG_BACKUP_COUNT", DEFAULT_BACKGROUND_LOG_BACKUP_COUNT)
+        if getattr(sys, "frozen", False):
+            env[PYINSTALLER_RESET_ENVIRONMENT] = "1"
     command = build_proxy_command(domain_crt, domain_key, env, pid_file=pid_path)
     console.print(
         Panel.fit(
@@ -1017,11 +1074,6 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
     )
 
     if background:
-        paths.root.mkdir(parents=True, exist_ok=True)
-        log_path = bridge_log_file(paths)
-        env["OLB_LOG_PATH"] = str(log_path)
-        env.setdefault("OLB_LOG_MAX_BYTES", DEFAULT_BACKGROUND_LOG_MAX_BYTES)
-        env.setdefault("OLB_LOG_BACKUP_COUNT", DEFAULT_BACKGROUND_LOG_BACKUP_COUNT)
         if command and command[0] == "sudo" and detect_os() != "windows":
             prepare_background_launch(command)
             launch_background_with_sudo(command, env, log_path)
@@ -1034,7 +1086,7 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
         }
         if detect_os() == "windows":
             popen_kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             )
         else:
             popen_kwargs["start_new_session"] = True

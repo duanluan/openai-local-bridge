@@ -97,6 +97,22 @@ class StartupTests(unittest.TestCase):
 
         self.assertEqual(str(ctx.exception), "bridge already running (pid 789)")
 
+    def test_process_exists_windows_returns_false_for_invalid_parameter(self):
+        module = load_module()
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.return_value = 0
+
+        with (
+            mock.patch.object(module.os, "name", "nt"),
+            mock.patch.object(module, "windows_kernel32", return_value=kernel32),
+            mock.patch.object(module, "windows_last_error", return_value=module.WINDOWS_ERROR_INVALID_PARAMETER),
+        ):
+            exists = module.process_exists(789)
+
+        self.assertFalse(exists)
+        kernel32.GetExitCodeProcess.assert_not_called()
+        kernel32.CloseHandle.assert_not_called()
+
     def test_create_server_permission_error_uses_chinese_when_requested(self):
         module = load_module("zh")
 
