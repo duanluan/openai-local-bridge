@@ -8,7 +8,9 @@ __pycache__/
 .venv/
 dist/
 build/
+build-windows/
 release/
+dist-windows/
 olb.spec
 *.egg-info/
 ca/

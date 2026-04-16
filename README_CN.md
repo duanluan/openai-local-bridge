@@ -69,10 +69,10 @@ irm https://raw.githubusercontent.com/duanluan/openai-local-bridge/main/install.
 olb start
 ```
 
-后台启动：
+`start` 现在默认后台运行。如果要前台调试输出：
 
 ```bash
-olb start --background
+olb start --debug
 ```
 
 后台日志会写到配置目录下的 `bridge.log`，并自动按 1 MiB 轮转，保留 3 个备份文件。
@@ -113,6 +113,18 @@ olb disable
 olb stop
 ```
 
+按当前运行模式重启 bridge：
+
+```bash
+olb reload
+```
+
+实时查看日志，启动时先显示最新 10 行：
+
+```bash
+olb log
+```
+
 ## 常用命令
 
 命令说明：
@@ -130,8 +142,11 @@ olb stop
 - `status`：查看当前状态
 - `enable`：安装证书、处理 hosts，并在支持的平台上处理 NSS
 - `disable`：取消 hosts 接管
-- `start`：未初始化时先进入初始化，然后执行 `enable` 并直接启动 bridge
-- `start --background`：以后台模式启动 bridge，并将日志写到配置目录
+- `start`：未初始化时先进入初始化，然后执行 `enable`，默认以后台模式启动 bridge
+- `start --debug`：以前台模式启动 bridge，便于调试
+- `reload`：重启 bridge；不带参数时保持当前运行模式
+- `reload --debug`：以前台模式重启 bridge
+- `log`：实时查看日志，启动时先显示最新 10 行
 - `stop`：停止当前 bridge 进程，包括后台运行中的实例
 
 ## 包装脚本入口

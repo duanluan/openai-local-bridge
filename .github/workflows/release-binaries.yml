@@ -136,6 +136,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -148,9 +150,21 @@ jobs:
           path: release
           merge-multiple: true
 
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          version="${{ needs.validate.outputs.version }}"
+          note_file=".github/release-notes/v${version}.md"
+          if [ -f "${note_file}" ]; then
+            cp "${note_file}" release/RELEASE_NOTES.md
+          else
+            printf "# v%s\n\nEnglish\n\n- Release published.\n\n中文\n\n- 已发布版本。\n" "${version}" > release/RELEASE_NOTES.md
+          fi
+
       - uses: softprops/action-gh-release@v2
         with:
           name: v${{ needs.validate.outputs.version }}
+          body_path: release/RELEASE_NOTES.md
           files: release/*
 
   publish-pypi:

@@ -102,7 +102,7 @@ class VersionTests(unittest.TestCase):
 
     def test_app_version_falls_back_when_metadata_missing(self):
         with mock.patch.object(olb_cli, "package_version", side_effect=olb_cli.PackageNotFoundError):
-            self.assertEqual(olb_cli.app_version(), "0.2.9")
+            self.assertEqual(olb_cli.app_version(), "0.3.0")
 
     def test_main_supports_version_subcommand(self):
         with (
@@ -149,7 +149,9 @@ class LocalizationTests(unittest.TestCase):
         self.assertIn("--lang {en,zh}", help_text)
         self.assertIn("set command language", help_text)
         self.assertIn("commands", help_text)
-        self.assertIn("run bridge in background", start_help)
+        self.assertIn("restart the bridge", help_text)
+        self.assertIn("follow the bridge log", help_text)
+        self.assertIn("run bridge in foreground with live output", start_help)
         self.assertIn("account (a)", help_text)
         self.assertIn("list (ls)", account_help)
         self.assertIn("use (switch)", account_help)
@@ -165,7 +167,9 @@ class LocalizationTests(unittest.TestCase):
         self.assertIn("--lang {en,zh}", help_text)
         self.assertIn("设置命令语言", help_text)
         self.assertIn("命令", help_text)
-        self.assertIn("以后台模式运行 bridge", start_help)
+        self.assertIn("重启 bridge", help_text)
+        self.assertIn("实时查看 bridge 日志", help_text)
+        self.assertIn("以前台模式运行 bridge 并输出实时日志", start_help)
         self.assertIn("account (a)", help_text)
         self.assertIn("list (ls)", account_help)
         self.assertIn("use (switch)", account_help)
@@ -328,7 +332,7 @@ class RunStartTests(unittest.TestCase):
         console_print.assert_called_once_with("未检测到配置，先进入初始化。初始化完成后会继续执行 enable 和 start。")
         ensure_config.assert_called_once_with(paths, interactive=True)
         run_enable.assert_called_once_with(paths)
-        start_proxy.assert_called_once_with(paths, config, background=False)
+        start_proxy.assert_called_once_with(paths, config, background=True)
 
     def test_run_start_prints_english_notice_when_requested(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,9 +381,9 @@ class RunStartTests(unittest.TestCase):
             exit_code = olb_cli.main()
 
         self.assertEqual(exit_code, 0)
-        run_start.assert_called_once_with(paths, background=False)
+        run_start.assert_called_once_with(paths, background=True)
 
-    def test_run_start_supports_background_mode(self):
+    def test_run_start_supports_debug_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = make_paths(Path(tmp))
             config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
@@ -389,22 +393,170 @@ class RunStartTests(unittest.TestCase):
                 mock.patch.object(olb_cli, "run_enable"),
                 mock.patch.object(olb_cli, "start_proxy", return_value=0) as start_proxy,
             ):
-                exit_code = olb_cli.run_start(paths, background=True)
+                exit_code = olb_cli.run_start(paths, background=False)
 
         self.assertEqual(exit_code, 0)
-        start_proxy.assert_called_once_with(paths, config, background=True)
+        start_proxy.assert_called_once_with(paths, config, background=False)
 
-    def test_main_start_background_passes_flag(self):
+    def test_main_start_debug_passes_flag(self):
         paths = make_paths(Path("/tmp/olb-test"))
         with (
             mock.patch.object(olb_cli, "get_paths", return_value=paths),
             mock.patch.object(olb_cli, "run_start", return_value=0) as run_start,
-            mock.patch.object(olb_cli.sys, "argv", ["olb", "start", "--background"]),
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "start", "--debug"]),
         ):
             exit_code = olb_cli.main()
 
         self.assertEqual(exit_code, 0)
-        run_start.assert_called_once_with(paths, background=True)
+        run_start.assert_called_once_with(paths, background=False)
+
+
+class ReloadCommandTests(unittest.TestCase):
+    def test_run_reload_restarts_running_bridge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            paths.root.mkdir(parents=True, exist_ok=True)
+            (paths.root / "bridge.mode").write_text("background\n", encoding="utf-8")
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with (
+                mock.patch.object(olb_cli, "ensure_config", return_value=config) as ensure_config,
+                mock.patch.object(olb_cli, "run_enable") as run_enable,
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=456) as running_bridge_pid,
+                mock.patch.object(olb_cli, "stop_proxy", return_value=0) as stop_proxy,
+                mock.patch.object(olb_cli, "start_proxy", return_value=0) as start_proxy,
+            ):
+                exit_code = olb_cli.run_reload(paths)
+
+        self.assertEqual(exit_code, 0)
+        ensure_config.assert_called_once_with(paths, interactive=True)
+        run_enable.assert_called_once_with(paths)
+        running_bridge_pid.assert_called_once_with(paths)
+        stop_proxy.assert_called_once_with(paths)
+        start_proxy.assert_called_once_with(paths, config, background=True)
+
+    def test_run_reload_reuses_debug_mode_when_bridge_is_running_in_debug(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            paths.root.mkdir(parents=True, exist_ok=True)
+            (paths.root / "bridge.mode").write_text("debug\n", encoding="utf-8")
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with (
+                mock.patch.object(olb_cli, "ensure_config", return_value=config),
+                mock.patch.object(olb_cli, "run_enable"),
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=456),
+                mock.patch.object(olb_cli, "stop_proxy", return_value=0),
+                mock.patch.object(olb_cli, "start_proxy", return_value=0) as start_proxy,
+            ):
+                exit_code = olb_cli.run_reload(paths, background=None)
+
+        self.assertEqual(exit_code, 0)
+        start_proxy.assert_called_once_with(paths, config, background=False)
+
+    def test_run_reload_starts_when_bridge_is_not_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
+
+            with (
+                mock.patch.object(olb_cli, "ensure_config", return_value=config),
+                mock.patch.object(olb_cli, "run_enable"),
+                mock.patch.object(olb_cli, "running_bridge_pid", return_value=None),
+                mock.patch.object(olb_cli, "stop_proxy") as stop_proxy,
+                mock.patch.object(olb_cli, "start_proxy", return_value=0) as start_proxy,
+            ):
+                exit_code = olb_cli.run_reload(paths, background=False)
+
+        self.assertEqual(exit_code, 0)
+        stop_proxy.assert_not_called()
+        start_proxy.assert_called_once_with(paths, config, background=False)
+
+    def test_main_reload_debug_passes_flag(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_reload", return_value=0) as run_reload,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "reload", "--debug"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_reload.assert_called_once_with(paths, background=False)
+
+    def test_main_reload_without_flag_preserves_running_mode(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_reload", return_value=0) as run_reload,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "reload"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_reload.assert_called_once_with(paths, background=None)
+
+
+class LogCommandTests(unittest.TestCase):
+    def test_run_log_raises_when_log_file_is_missing_and_bridge_is_stopped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+
+            with mock.patch.object(olb_cli, "running_bridge_pid", return_value=None):
+                with self.assertRaises(olb_cli.CliError) as exc:
+                    olb_cli.run_log(paths)
+
+        self.assertIn("bridge log does not exist yet", str(exc.exception))
+
+    def test_run_log_streams_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            paths.root.mkdir(parents=True, exist_ok=True)
+            log_path = paths.root / "bridge.log"
+            log_path.write_text("".join(f"line {i}\n" for i in range(1, 13)), encoding="utf-8")
+            stdout = mock.Mock()
+
+            with (
+                mock.patch.object(olb_cli.sys, "stdout", stdout),
+                mock.patch.object(olb_cli.time, "sleep", side_effect=KeyboardInterrupt),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    olb_cli.run_log(paths)
+
+        stdout.write.assert_any_call("".join(f"line {i}\n" for i in range(3, 13)))
+        self.assertNotIn(mock.call("line 1\n"), stdout.write.call_args_list)
+        self.assertNotIn(mock.call("line 2\n"), stdout.write.call_args_list)
+        stdout.flush.assert_called()
+
+    def test_main_log_runs_log_flow(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_log", return_value=0) as run_log,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "log"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_log.assert_called_once_with(paths)
+
+    def test_main_log_keyboard_interrupt_uses_plain_stderr_notice(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        stderr = mock.Mock()
+
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_log", side_effect=KeyboardInterrupt),
+            mock.patch.object(olb_cli.sys, "stderr", stderr),
+            mock.patch.object(olb_cli.console, "print") as console_print,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "log"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 130)
+        stderr.write.assert_called_once_with("Cancelled\n")
+        stderr.flush.assert_called_once_with()
+        console_print.assert_not_called()
 
 
 class AccountCommandTests(unittest.TestCase):
@@ -1059,15 +1211,19 @@ class StopProxyTests(unittest.TestCase):
             paths = make_paths(Path(tmp))
             paths.root.mkdir(parents=True, exist_ok=True)
             pid_file = paths.root / "bridge.pid"
+            mode_file = paths.root / "bridge.mode"
             pid_file.write_text("123\n", encoding="utf-8")
+            mode_file.write_text("debug\n", encoding="utf-8")
 
             with mock.patch.object(olb_cli, "process_exists", return_value=False):
                 pid = olb_cli.running_bridge_pid(paths)
 
             stale_removed = not pid_file.exists()
+            mode_removed = not mode_file.exists()
 
         self.assertIsNone(pid)
         self.assertTrue(stale_removed)
+        self.assertTrue(mode_removed)
 
     def test_stop_proxy_returns_zero_when_not_running(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1084,6 +1240,7 @@ class StopProxyTests(unittest.TestCase):
             paths = make_paths(Path(tmp))
             paths.root.mkdir(parents=True, exist_ok=True)
             (paths.root / "bridge.pid").write_text("456\n", encoding="utf-8")
+            (paths.root / "bridge.mode").write_text("debug\n", encoding="utf-8")
 
             with (
                 lang_env("zh"),
@@ -1098,6 +1255,7 @@ class StopProxyTests(unittest.TestCase):
         stop_signal.assert_called_once_with(456)
         wait_for_process_exit.assert_called_once_with(456, 5)
         console_print.assert_called_once_with("bridge 已停止（PID 456）")
+        self.assertFalse((paths.root / "bridge.mode").exists())
 
     def test_stop_proxy_uses_english_output_when_requested(self):
         with tempfile.TemporaryDirectory() as tmp:

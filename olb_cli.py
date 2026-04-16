@@ -105,7 +105,7 @@ def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.2.9"
+        return "0.3.0"
 
 
 def detect_os() -> str:
@@ -142,6 +142,10 @@ def bridge_pid_file(paths: AppPaths) -> Path:
 
 def bridge_log_file(paths: AppPaths) -> Path:
     return paths.root / "bridge.log"
+
+
+def bridge_mode_file(paths: AppPaths) -> Path:
+    return paths.root / "bridge.mode"
 
 
 def read_pid_file(path: Path) -> int | None:
@@ -197,6 +201,21 @@ def windows_process_exists(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
+def read_mode_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    raw = path.read_text(encoding="utf-8").strip().lower()
+    if raw in {"background", "debug"}:
+        return raw
+    path.unlink(missing_ok=True)
+    return None
+
+
+def write_mode_file(path: Path, *, background: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("background\n" if background else "debug\n", encoding="utf-8")
+
+
 def process_exists(pid: int) -> bool:
     if detect_os() == "windows":
         return windows_process_exists(pid)
@@ -217,6 +236,7 @@ def running_bridge_pid(paths: AppPaths) -> int | None:
     if process_exists(pid):
         return pid
     pid_path.unlink(missing_ok=True)
+    bridge_mode_file(paths).unlink(missing_ok=True)
     return None
 
 
@@ -1075,9 +1095,14 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
 
     if background:
         if command and command[0] == "sudo" and detect_os() != "windows":
+            write_mode_file(bridge_mode_file(paths), background=True)
             prepare_background_launch(command)
-            launch_background_with_sudo(command, env, log_path)
-            return wait_for_background_start(paths, None, log_path)
+            try:
+                launch_background_with_sudo(command, env, log_path)
+                return wait_for_background_start(paths, None, log_path)
+            except Exception:
+                bridge_mode_file(paths).unlink(missing_ok=True)
+                raise
         popen_kwargs: dict[str, Any] = {
             "env": env,
             "stdin": subprocess.DEVNULL,
@@ -1090,11 +1115,20 @@ def start_proxy(paths: AppPaths, config: dict[str, Any], *, background: bool = F
             )
         else:
             popen_kwargs["start_new_session"] = True
-        process = subprocess.Popen(command, **popen_kwargs)
-        return wait_for_background_start(paths, process, log_path)
+        write_mode_file(bridge_mode_file(paths), background=True)
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+            return wait_for_background_start(paths, process, log_path)
+        except Exception:
+            bridge_mode_file(paths).unlink(missing_ok=True)
+            raise
 
-    result = subprocess.run(command, env=env)
-    return result.returncode
+    write_mode_file(bridge_mode_file(paths), background=False)
+    try:
+        result = subprocess.run(command, env=env)
+        return result.returncode
+    finally:
+        bridge_mode_file(paths).unlink(missing_ok=True)
 
 
 def stop_proxy(paths: AppPaths) -> int:
@@ -1110,8 +1144,53 @@ def stop_proxy(paths: AppPaths) -> int:
             raise CliError(t("cannot_stop_bridge", pid=pid))
 
     bridge_pid_file(paths).unlink(missing_ok=True)
+    bridge_mode_file(paths).unlink(missing_ok=True)
     console.print(t("bridge_stopped", pid=pid))
     return 0
+
+
+def follow_log_file(log_path: Path) -> None:
+    handle = None
+    position = 0
+    file_key: tuple[int, int] | None = None
+    initial_tail_shown = False
+
+    try:
+        while True:
+            if not log_path.exists():
+                time.sleep(0.2)
+                continue
+
+            stat = log_path.stat()
+            current_key = (stat.st_dev, stat.st_ino)
+            if handle is None or file_key != current_key or stat.st_size < position:
+                if handle is not None:
+                    handle.close()
+                handle = log_path.open("r", encoding="utf-8", errors="ignore")
+                if not initial_tail_shown:
+                    lines = handle.readlines()
+                    chunk = "".join(lines[-10:])
+                    if chunk:
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+                    position = handle.tell()
+                    initial_tail_shown = True
+                elif file_key != current_key or stat.st_size < position:
+                    position = 0
+                handle.seek(position)
+                file_key = current_key
+
+            chunk = handle.read()
+            if chunk:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+                position = handle.tell()
+                continue
+
+            time.sleep(0.2)
+    finally:
+        if handle is not None:
+            handle.close()
 
 
 def run_init(paths: AppPaths) -> int:
@@ -1191,7 +1270,7 @@ def run_disable() -> int:
     return 0
 
 
-def run_start(paths: AppPaths, *, background: bool = False) -> int:
+def run_start(paths: AppPaths, *, background: bool = True) -> int:
     if not paths.config_file.exists():
         console.print(t("missing_config_start_notice"))
     config = ensure_config(paths, interactive=True)
@@ -1201,6 +1280,30 @@ def run_start(paths: AppPaths, *, background: bool = False) -> int:
 
 def run_stop(paths: AppPaths) -> int:
     return stop_proxy(paths)
+
+
+def run_reload(paths: AppPaths, *, background: bool | None = None) -> int:
+    if not paths.config_file.exists():
+        console.print(t("missing_config_start_notice"))
+    config = ensure_config(paths, interactive=True)
+    run_enable(paths)
+    pid = running_bridge_pid(paths)
+    if background is None:
+        if pid is None:
+            background = True
+        else:
+            background = read_mode_file(bridge_mode_file(paths)) != "debug"
+    if pid is not None:
+        stop_proxy(paths)
+    return start_proxy(paths, config, background=background)
+
+
+def run_log(paths: AppPaths) -> int:
+    log_path = bridge_log_file(paths)
+    if not log_path.exists() and running_bridge_pid(paths) is None:
+        raise CliError(t("bridge_log_missing", log_path=log_path))
+    follow_log_file(log_path)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1223,12 +1326,16 @@ def build_parser() -> argparse.ArgumentParser:
         ("remove-hosts", "cmd_remove_hosts_help"),
         ("version", "cmd_version_help"),
         ("stop", "cmd_stop_help"),
+        ("log", "cmd_log_help"),
     ]
     for name, help_key in command_specs:
         subparsers.add_parser(name, help=t(help_key), description=t(help_key))
 
     start_parser = subparsers.add_parser("start", help=t("cmd_start_help"), description=t("cmd_start_help"))
-    start_parser.add_argument("--background", action="store_true", help=t("start_background_help"))
+    start_parser.add_argument("--debug", action="store_true", help=t("start_debug_help"))
+
+    reload_parser = subparsers.add_parser("reload", help=t("cmd_reload_help"), description=t("cmd_reload_help"))
+    reload_parser.add_argument("--debug", action="store_true", help=t("start_debug_help"))
 
     account_parser = subparsers.add_parser(
         "account",
@@ -1276,6 +1383,14 @@ def default_command(paths: AppPaths) -> str:
     return "status" if paths.config_file.exists() else "init"
 
 
+def safe_interrupt_notice(message: str) -> None:
+    try:
+        sys.stderr.write(f"{message}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     apply_language_override(argv)
@@ -1299,6 +1414,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if command == "stop":
             return run_stop(paths)
+        if command == "reload":
+            return run_reload(paths, background=False if args.debug else None)
         if command == "config":
             show_config(paths)
             return 0
@@ -1337,7 +1454,9 @@ def main(argv: list[str] | None = None) -> int:
             remove_hosts()
             return 0
         if command == "start":
-            return run_start(paths, background=args.background)
+            return run_start(paths, background=not args.debug)
+        if command == "log":
+            return run_log(paths)
         if command == "version":
             console.print(app_version())
             return 0
@@ -1347,7 +1466,7 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[bold red]{t('error_label')}[/bold red] {exc}")
         return 1
     except KeyboardInterrupt:
-        console.print(t("cancelled"))
+        safe_interrupt_notice(t("cancelled"))
         return 130
 
 

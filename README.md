@@ -69,10 +69,10 @@ The most direct way to use it is:
 olb start
 ```
 
-Run it in the background:
+`start` now runs in the background by default. If you want foreground output for debugging:
 
 ```bash
-olb start --background
+olb start --debug
 ```
 
 Background logs are written to `bridge.log` under the config directory and rotate automatically at 1 MiB with 3 backup files.
@@ -113,6 +113,18 @@ To stop a running bridge process:
 olb stop
 ```
 
+To restart the bridge and keep the current run mode:
+
+```bash
+olb reload
+```
+
+To follow the log, showing the latest 10 lines first:
+
+```bash
+olb log
+```
+
 ## Common Commands
 
 Command overview:
@@ -130,8 +142,11 @@ Command overview:
 - `status`: show the current status
 - `enable`: install certificates, update hosts, and manage NSS on supported platforms
 - `disable`: remove the hosts takeover
-- `start`: if not initialized, run setup first, then execute `enable` and start the bridge immediately
-- `start --background`: start the bridge in the background and write logs to the config directory
+- `start`: if not initialized, run setup first, then execute `enable` and start the bridge in the background
+- `start --debug`: run the bridge in the foreground for debugging
+- `reload`: restart the bridge; when no flag is passed it keeps the current run mode
+- `reload --debug`: restart the bridge in the foreground
+- `log`: follow the log file and show the latest 10 lines first
 - `stop`: stop the current bridge process, including one started in the background
 
 ## Wrapper Script Entry Points

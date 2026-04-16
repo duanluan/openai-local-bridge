@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openai-local-bridge"
-version = "0.2.9"
+version = "0.3.0"
 description = "Local OpenAI bridge CLI for OpenAI-compatible upstreams"
 readme = "README.md"
 requires-python = ">=3.10"
