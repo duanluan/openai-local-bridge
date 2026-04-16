@@ -16,8 +16,10 @@ def load_module(language: str = "en"):
         "OLB_UPSTREAM_KEY": "test-key",
         "OLB_LISTEN_HOST": "127.0.0.1",
         "OLB_LISTEN_PORT": "443",
-        "OLB_LANG": language,
     }
+
+    if language:
+        env["OLB_LANG"] = language
     spec = importlib.util.spec_from_file_location("openai_local_bridge_test", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
 
@@ -28,9 +30,65 @@ def load_module(language: str = "en"):
     return module
 
 
+class SessionTests(unittest.TestCase):
+    def test_should_reset_upstream_session_for_ssl_error(self):
+        module = load_module("en")
+
+        exc = module.requests.exceptions.SSLError("[SSL] record layer failure")
+
+        self.assertTrue(module.should_reset_upstream_session(exc))
+
+    def test_should_not_reset_upstream_session_for_http_error(self):
+        module = load_module("en")
+
+        exc = module.requests.HTTPError("404 Client Error")
+
+        self.assertFalse(module.should_reset_upstream_session(exc))
+
+    def test_request_upstream_retries_once_after_resettable_error(self):
+        module = load_module("en")
+        handler = module.ProxyHandler.__new__(module.ProxyHandler)
+        handler.command = "POST"
+        first_exc = module.requests.exceptions.SSLError("[SSL] record layer failure")
+        first_session = mock.Mock()
+        second_session = mock.Mock()
+        response = mock.Mock()
+        response.status_code = 200
+        second_session.request.return_value = response
+
+        with (
+            mock.patch.object(module, "SESSION", first_session),
+            mock.patch.object(module, "create_upstream_session", return_value=second_session),
+        ):
+            first_session.request.side_effect = first_exc
+
+            actual = handler.request_upstream("https://example.com/v1/chat/completions", {"Authorization": "Bearer test"}, b"{}")
+
+        self.assertIs(actual, response)
+        first_session.request.assert_called_once()
+        first_session.close.assert_called_once()
+        second_session.request.assert_called_once()
+
+    def test_request_upstream_does_not_retry_non_resettable_error(self):
+        module = load_module("en")
+        handler = module.ProxyHandler.__new__(module.ProxyHandler)
+        handler.command = "POST"
+        session = mock.Mock()
+        exc = module.requests.HTTPError("404 Client Error")
+
+        with mock.patch.object(module, "SESSION", session):
+            session.request.side_effect = exc
+
+            with self.assertRaises(module.requests.HTTPError):
+                handler.request_upstream("https://example.com/v1/chat/completions", {"Authorization": "Bearer test"}, b"{}")
+
+        session.request.assert_called_once()
+        session.close.assert_not_called()
+
+
 class StartupTests(unittest.TestCase):
     def test_create_server_permission_error_has_actionable_message(self):
-        module = load_module()
+        module = load_module("en")
 
         with mock.patch.object(
             module,
@@ -42,19 +100,18 @@ class StartupTests(unittest.TestCase):
 
         self.assertEqual(
             str(ctx.exception),
-            "cannot bind https listener on 127.0.0.1:443; "
-            "choose OLB_LISTEN_PORT>=1024 or run with elevated privileges",
+            module.t("bridge_bind_error", host="127.0.0.1", port=443),
         )
 
     def test_parse_args_accepts_pid_file(self):
-        module = load_module()
+        module = load_module("en")
 
         args = module.parse_args(["--cert", "cert.pem", "--key", "key.pem", "--pid-file", "/tmp/bridge.pid"])
 
         self.assertEqual(args.pid_file, "/tmp/bridge.pid")
 
     def test_main_accepts_explicit_argv(self):
-        module = load_module()
+        module = load_module("en")
         server = mock.Mock()
         server.socket = mock.Mock()
 
@@ -73,7 +130,7 @@ class StartupTests(unittest.TestCase):
         server.server_close.assert_called_once()
 
     def test_pid_file_guard_writes_and_removes_pid_file(self):
-        module = load_module()
+        module = load_module("en")
 
         with tempfile.TemporaryDirectory() as tmp:
             pid_file = Path(tmp) / "bridge.pid"
@@ -84,7 +141,7 @@ class StartupTests(unittest.TestCase):
             self.assertFalse(pid_file.exists())
 
     def test_pid_file_guard_rejects_running_instance(self):
-        module = load_module()
+        module = load_module("en")
 
         with tempfile.TemporaryDirectory() as tmp:
             pid_file = Path(tmp) / "bridge.pid"
@@ -95,10 +152,10 @@ class StartupTests(unittest.TestCase):
                     with module.pid_file_guard(str(pid_file)):
                         pass
 
-        self.assertEqual(str(ctx.exception), "bridge already running (pid 789)")
+        self.assertEqual(str(ctx.exception), module.t("bridge_already_running", pid=789))
 
     def test_process_exists_windows_returns_false_for_invalid_parameter(self):
-        module = load_module()
+        module = load_module("en")
         kernel32 = mock.Mock()
         kernel32.OpenProcess.return_value = 0
 
@@ -131,7 +188,7 @@ class StartupTests(unittest.TestCase):
         )
 
     def test_configure_logging_uses_rotating_file_handler_when_log_path_is_set(self):
-        module = load_module()
+        module = load_module("en")
 
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "logs" / "bridge.log"

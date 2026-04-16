@@ -19,8 +19,39 @@ import requests
 
 
 LOG = logging.getLogger("openai_local_bridge")
-SESSION = requests.Session()
-SESSION.trust_env = False
+
+
+def create_upstream_session() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    return session
+
+
+def reset_upstream_session() -> None:
+    global SESSION
+    previous = SESSION
+    SESSION = create_upstream_session()
+    previous.close()
+
+
+def should_reset_upstream_session(exc: requests.RequestException) -> bool:
+    if isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ConnectionError)):
+        return True
+
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "record layer failure",
+            "unexpected eof",
+            "wrong version number",
+            "tlsv1 alert",
+            "ssleoferror",
+        )
+    )
+
+
+SESSION = create_upstream_session()
 WINDOWS_ERROR_ACCESS_DENIED = 5
 WINDOWS_ERROR_INVALID_PARAMETER = 87
 WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -296,15 +327,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         LOG.info("%s %s -> %s", self.command, parsed.path or "/", upstream_url)
 
         try:
-            response = SESSION.request(
-                method=self.command,
-                url=upstream_url,
-                headers=outgoing_headers,
-                data=body if body else None,
-                stream=True,
-                timeout=(30, 1800),
-                verify=not SETTINGS["upstream_insecure"],
-            )
+            response = self.request_upstream(upstream_url, outgoing_headers, body)
         except requests.RequestException as exc:
             LOG.error("upstream request failed: %s", exc)
             self.send_json(502, {"error": str(exc)})
@@ -316,6 +339,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         with response:
             self.relay_response(response, requested_model, upstream_model)
+
+    def request_upstream(self, upstream_url: str, outgoing_headers: dict[str, str], body: bytes) -> requests.Response:
+        request_kwargs = {
+            "method": self.command,
+            "url": upstream_url,
+            "headers": outgoing_headers,
+            "data": body if body else None,
+            "stream": True,
+            "timeout": (30, 1800),
+            "verify": not SETTINGS["upstream_insecure"],
+        }
+
+        try:
+            return SESSION.request(**request_kwargs)
+        except requests.RequestException as exc:
+            if not should_reset_upstream_session(exc):
+                raise
+
+            LOG.warning("reset upstream session after transport error: %s", exc)
+            reset_upstream_session()
+            return SESSION.request(**request_kwargs)
 
     def prepare_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}

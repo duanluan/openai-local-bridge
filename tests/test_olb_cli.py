@@ -102,7 +102,7 @@ class VersionTests(unittest.TestCase):
 
     def test_app_version_falls_back_when_metadata_missing(self):
         with mock.patch.object(olb_cli, "package_version", side_effect=olb_cli.PackageNotFoundError):
-            self.assertEqual(olb_cli.app_version(), "0.3.0")
+            self.assertEqual(olb_cli.app_version(), "0.3.1")
 
     def test_main_supports_version_subcommand(self):
         with (
@@ -502,7 +502,7 @@ class LogCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = make_paths(Path(tmp))
 
-            with mock.patch.object(olb_cli, "running_bridge_pid", return_value=None):
+            with lang_env("en"), mock.patch.object(olb_cli, "running_bridge_pid", return_value=None):
                 with self.assertRaises(olb_cli.CliError) as exc:
                     olb_cli.run_log(paths)
 
@@ -545,6 +545,7 @@ class LogCommandTests(unittest.TestCase):
         stderr = mock.Mock()
 
         with (
+            lang_env("en"),
             mock.patch.object(olb_cli, "get_paths", return_value=paths),
             mock.patch.object(olb_cli, "run_log", side_effect=KeyboardInterrupt),
             mock.patch.object(olb_cli.sys, "stderr", stderr),
@@ -583,6 +584,7 @@ class AccountCommandTests(unittest.TestCase):
             }
 
             with (
+                lang_env("en"),
                 mock.patch.object(olb_cli, "prompt_for_config", return_value=new_account) as prompt_for_config,
                 mock.patch.object(olb_cli.console, "print") as console_print,
             ):
@@ -619,6 +621,7 @@ class AccountCommandTests(unittest.TestCase):
             }
 
             with (
+                lang_env("en"),
                 mock.patch.object(olb_cli, "prompt_for_config", return_value=updated_account) as prompt_for_config,
                 mock.patch.object(olb_cli.console, "print") as console_print,
             ):
@@ -660,7 +663,7 @@ class AccountCommandTests(unittest.TestCase):
                 },
             )
 
-            with mock.patch.object(olb_cli.console, "print") as console_print:
+            with lang_env("en"), mock.patch.object(olb_cli.console, "print") as console_print:
                 exit_code = olb_cli.run_account_delete(paths, "default")
 
             saved = olb_cli.load_config(paths)
@@ -697,7 +700,7 @@ class AccountCommandTests(unittest.TestCase):
                 },
             )
 
-            with mock.patch.object(olb_cli.console, "print") as console_print:
+            with lang_env("en"), mock.patch.object(olb_cli.console, "print") as console_print:
                 exit_code = olb_cli.run_account_switch(paths, "work")
 
             saved = olb_cli.load_config(paths)
@@ -730,6 +733,7 @@ class AccountCommandTests(unittest.TestCase):
             )
 
             with (
+                lang_env("en"),
                 mock.patch.object(olb_cli.console, "print") as console_print,
                 mock.patch.object(olb_cli, "running_bridge_pid", return_value=456),
                 mock.patch.object(olb_cli.Confirm, "ask", return_value=True) as confirm_ask,
@@ -949,7 +953,7 @@ class StartProxyTests(unittest.TestCase):
             paths = make_paths(Path(tmp))
             config = {"upstream_base": "https://example.com/v1", "upstream_key": "test-key", "reasoning_effort": "medium"}
 
-            with mock.patch.object(olb_cli, "running_bridge_pid", return_value=321):
+            with lang_env("en"), mock.patch.object(olb_cli, "running_bridge_pid", return_value=321):
                 with self.assertRaises(olb_cli.CliError) as exc:
                     olb_cli.start_proxy(paths, config)
 

@@ -105,7 +105,7 @@ def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.3.0"
+        return "0.3.1"
 
 
 def detect_os() -> str:
