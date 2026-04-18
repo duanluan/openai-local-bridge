@@ -73,6 +73,7 @@ olb start
 
 ```bash
 olb start --debug
+olb start -d
 ```
 
 Background logs are written to `bridge.log` under the config directory and rotate automatically at 1 MiB with 3 backup files.
@@ -116,7 +117,13 @@ olb stop
 To restart the bridge and keep the current run mode:
 
 ```bash
-olb reload
+olb restart
+```
+
+To inspect the local setup without making changes:
+
+```bash
+olb doctor
 ```
 
 To follow the log, showing the latest 10 lines first:
@@ -143,9 +150,12 @@ Command overview:
 - `enable`: install certificates, update hosts, and manage NSS on supported platforms
 - `disable`: remove the hosts takeover
 - `start`: if not initialized, run setup first, then execute `enable` and start the bridge in the background
-- `start --debug`: run the bridge in the foreground for debugging
-- `reload`: restart the bridge; when no flag is passed it keeps the current run mode
-- `reload --debug`: restart the bridge in the foreground
+- `start --debug` / `start -d`: run the bridge in the foreground for debugging
+- `restart`: restart the bridge; when no flag is passed it keeps the current run mode
+- `restart --debug` / `restart -d`: restart the bridge in the foreground
+- `reload`: legacy alias for `restart`
+- `doctor`: inspect local bridge setup without making changes
+- `-v` / `-V` / `--version`: print the installed version
 - `log`: follow the log file and show the latest 10 lines first
 - `stop`: stop the current bridge process, including one started in the background
 

@@ -101,11 +101,18 @@ class AppPaths:
         return self.cert_dir / f"{domain}.ext.cnf"
 
 
+@dataclass
+class DoctorCheck:
+    name: str
+    status: str
+    detail: str
+
+
 def app_version() -> str:
     try:
         return package_version(APP_SLUG)
     except PackageNotFoundError:
-        return "0.3.1"
+        return "0.4.0"
 
 
 def detect_os() -> str:
@@ -881,12 +888,13 @@ def listener_state(listen_host: str, listen_port: int) -> str:
         sock.close()
 
 
-def status_data(paths: AppPaths) -> dict[str, str]:
+def status_data(paths: AppPaths, config: dict[str, Any] | None = None) -> dict[str, str]:
     domain = get_target_host()
     ip = get_hosts_ip()
     listen_host = get_optional_env("OLB_LISTEN_HOST", DEFAULT_LISTEN_HOST)
     listen_port = int(get_optional_env("OLB_LISTEN_PORT", DEFAULT_LISTEN_PORT))
-    config = load_config(paths)
+    if config is None:
+        config = load_config(paths)
     hosts_file = get_hosts_file()
     hosts_state = "disabled"
 
@@ -938,6 +946,100 @@ def print_status(paths: AppPaths) -> None:
     for key, value in data.items():
         table.add_row(translate_status_label(key), translate_status_value(value))
     console.print(table)
+
+
+def doctor_checks(paths: AppPaths) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    config: dict[str, Any] = {}
+    config_available = False
+
+    if paths.config_file.exists():
+        try:
+            config = load_config(paths)
+            config_available = True
+            checks.append(DoctorCheck(t("doctor_check_config"), "ok", t("doctor_config_ok", path=paths.config_file)))
+        except Exception as exc:
+            checks.append(DoctorCheck(t("doctor_check_config"), "fail", t("doctor_config_invalid", detail=exc)))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_config"), "fail", t("doctor_config_missing", path=paths.config_file)))
+
+    if config_available:
+        account_name = active_account_name(config)
+        account = active_account_config(config)
+        missing_fields = [translate_field_label(key) for key in REQUIRED_ACCOUNT_FIELDS if not str(account.get(key, "")).strip()]
+        if not account_name or not account:
+            checks.append(DoctorCheck(t("doctor_check_active_account"), "fail", t("doctor_account_missing")))
+        elif missing_fields:
+            checks.append(
+                DoctorCheck(
+                    t("doctor_check_active_account"),
+                    "fail",
+                    t("doctor_account_incomplete", name=account_name, fields=", ".join(missing_fields)),
+                )
+            )
+        else:
+            try:
+                validate_upstream(account)
+            except CliError as exc:
+                checks.append(DoctorCheck(t("doctor_check_active_account"), "fail", str(exc)))
+            else:
+                checks.append(DoctorCheck(t("doctor_check_active_account"), "ok", t("doctor_account_ok", name=account_name)))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_active_account"), "fail", t("doctor_account_missing")))
+
+    openssl_path = shutil.which("openssl")
+    if openssl_path:
+        checks.append(DoctorCheck(t("doctor_check_openssl"), "ok", t("doctor_openssl_ok", path=openssl_path)))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_openssl"), "fail", t("doctor_openssl_missing")))
+
+    try:
+        data = status_data(paths, config)
+    except Exception as exc:
+        checks.append(DoctorCheck(t("doctor_check_status"), "fail", t("doctor_status_error", detail=exc)))
+        return checks
+
+    if data["root_ca"] == "present":
+        checks.append(DoctorCheck(t("doctor_check_root_ca"), "ok", t("doctor_root_ca_ok", path=paths.root_ca_cert)))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_root_ca"), "warn", t("doctor_root_ca_missing")))
+
+    if data["hosts"] == "enabled":
+        checks.append(DoctorCheck(t("doctor_check_hosts"), "ok", t("doctor_hosts_enabled", path=data["hosts_file"])))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_hosts"), "warn", t("doctor_hosts_disabled", path=data["hosts_file"])))
+
+    nss_state = translate_status_value(data["nss"])
+    if data["nss"] in {"present", "not_applicable"}:
+        checks.append(DoctorCheck(t("doctor_check_nss"), "ok", t("doctor_nss_ok", state=nss_state)))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_nss"), "warn", t("doctor_nss_warn", state=nss_state)))
+
+    if data["listener"] == "listening":
+        checks.append(DoctorCheck(t("doctor_check_listener"), "ok", t("doctor_listener_ok", addr=data["listen_addr"])))
+    else:
+        checks.append(DoctorCheck(t("doctor_check_listener"), "warn", t("doctor_listener_stopped", addr=data["listen_addr"])))
+
+    return checks
+
+
+def run_doctor(paths: AppPaths) -> int:
+    checks = doctor_checks(paths)
+    table = Table(title=t("doctor_title"))
+    table.add_column(t("doctor_column_check"))
+    table.add_column(t("doctor_column_status"))
+    table.add_column(t("doctor_column_detail"))
+    for check in checks:
+        table.add_row(check.name, t(f"doctor_status_{check.status}"), check.detail)
+    console.print(table)
+
+    failed_count = sum(1 for check in checks if check.status == "fail")
+    if failed_count:
+        console.print(t("doctor_failed", count=failed_count))
+        return 1
+
+    console.print(t("doctor_ok"))
+    return 0
 
 
 def show_config(paths: AppPaths) -> None:
@@ -1310,6 +1412,7 @@ def build_parser() -> argparse.ArgumentParser:
     install_argparse_i18n()
     parser = argparse.ArgumentParser(prog="olb", description=t("cli_description"))
     parser.add_argument("--lang", choices=list(SUPPORTED_LANGUAGES), help=t("language_arg_help"))
+    parser.add_argument("-v", "-V", "--version", dest="version", action="store_true", help=t("version_arg_help"))
     subparsers = parser.add_subparsers(dest="command", title=t("subcommands_title"))
 
     command_specs = [
@@ -1319,6 +1422,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("status", "cmd_status_help"),
         ("config", "cmd_config_help"),
         ("config-path", "cmd_config_path_help"),
+        ("doctor", "cmd_doctor_help"),
         ("bootstrap-ca", "cmd_bootstrap_ca_help"),
         ("install-ca", "cmd_install_ca_help"),
         ("install-nss", "cmd_install_nss_help"),
@@ -1332,10 +1436,15 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.add_parser(name, help=t(help_key), description=t(help_key))
 
     start_parser = subparsers.add_parser("start", help=t("cmd_start_help"), description=t("cmd_start_help"))
-    start_parser.add_argument("--debug", action="store_true", help=t("start_debug_help"))
+    start_parser.add_argument("-d", "--debug", action="store_true", help=t("start_debug_help"))
 
-    reload_parser = subparsers.add_parser("reload", help=t("cmd_reload_help"), description=t("cmd_reload_help"))
-    reload_parser.add_argument("--debug", action="store_true", help=t("start_debug_help"))
+    restart_parser = subparsers.add_parser(
+        "restart",
+        aliases=["reload"],
+        help=t("cmd_restart_help"),
+        description=t("cmd_restart_help"),
+    )
+    restart_parser.add_argument("-d", "--debug", action="store_true", help=t("start_debug_help"))
 
     account_parser = subparsers.add_parser(
         "account",
@@ -1400,6 +1509,9 @@ def main(argv: list[str] | None = None) -> int:
     paths = get_paths()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.version:
+        console.print(app_version())
+        return 0
     command = args.command or default_command(paths)
 
     try:
@@ -1412,9 +1524,11 @@ def main(argv: list[str] | None = None) -> int:
         if command == "status":
             print_status(paths)
             return 0
+        if command == "doctor":
+            return run_doctor(paths)
         if command == "stop":
             return run_stop(paths)
-        if command == "reload":
+        if command in {"restart", "reload"}:
             return run_reload(paths, background=False if args.debug else None)
         if command == "config":
             show_config(paths)

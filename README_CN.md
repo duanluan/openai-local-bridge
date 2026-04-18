@@ -73,6 +73,7 @@ olb start
 
 ```bash
 olb start --debug
+olb start -d
 ```
 
 后台日志会写到配置目录下的 `bridge.log`，并自动按 1 MiB 轮转，保留 3 个备份文件。
@@ -116,7 +117,13 @@ olb stop
 按当前运行模式重启 bridge：
 
 ```bash
-olb reload
+olb restart
+```
+
+只检查本地环境，不做修改：
+
+```bash
+olb doctor
 ```
 
 实时查看日志，启动时先显示最新 10 行：
@@ -143,9 +150,12 @@ olb log
 - `enable`：安装证书、处理 hosts，并在支持的平台上处理 NSS
 - `disable`：取消 hosts 接管
 - `start`：未初始化时先进入初始化，然后执行 `enable`，默认以后台模式启动 bridge
-- `start --debug`：以前台模式启动 bridge，便于调试
-- `reload`：重启 bridge；不带参数时保持当前运行模式
-- `reload --debug`：以前台模式重启 bridge
+- `start --debug` / `start -d`：以前台模式启动 bridge，便于调试
+- `restart`：重启 bridge；不带参数时保持当前运行模式
+- `restart --debug` / `restart -d`：以前台模式重启 bridge
+- `reload`：`restart` 的旧别名
+- `doctor`：只检查本地 bridge 配置，不修改系统
+- `-v` / `-V` / `--version`：输出已安装版本
 - `log`：实时查看日志，启动时先显示最新 10 行
 - `stop`：停止当前 bridge 进程，包括后台运行中的实例
 

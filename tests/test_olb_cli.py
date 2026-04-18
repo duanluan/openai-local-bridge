@@ -102,7 +102,7 @@ class VersionTests(unittest.TestCase):
 
     def test_app_version_falls_back_when_metadata_missing(self):
         with mock.patch.object(olb_cli, "package_version", side_effect=olb_cli.PackageNotFoundError):
-            self.assertEqual(olb_cli.app_version(), "0.3.1")
+            self.assertEqual(olb_cli.app_version(), "0.4.0")
 
     def test_main_supports_version_subcommand(self):
         with (
@@ -116,15 +116,41 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         console_print.assert_called_once_with("1.2.3")
 
-    def test_main_rejects_dash_dash_version(self):
+    def test_main_supports_dash_v(self):
         with (
             mock.patch.object(olb_cli, "get_paths", return_value=make_paths(Path("/tmp/olb-test"))),
-            mock.patch.object(olb_cli.sys, "argv", ["olb", "--version"]),
-            self.assertRaises(SystemExit) as exc,
+            mock.patch.object(olb_cli, "app_version", return_value="1.2.3"),
+            mock.patch.object(olb_cli.console, "print") as console_print,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "-v"]),
         ):
-            olb_cli.main()
+            exit_code = olb_cli.main()
 
-        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(exit_code, 0)
+        console_print.assert_called_once_with("1.2.3")
+
+    def test_main_supports_dash_upper_v(self):
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=make_paths(Path("/tmp/olb-test"))),
+            mock.patch.object(olb_cli, "app_version", return_value="1.2.3"),
+            mock.patch.object(olb_cli.console, "print") as console_print,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "-V"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        console_print.assert_called_once_with("1.2.3")
+
+    def test_main_supports_dash_dash_version(self):
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=make_paths(Path("/tmp/olb-test"))),
+            mock.patch.object(olb_cli, "app_version", return_value="1.2.3"),
+            mock.patch.object(olb_cli.console, "print") as console_print,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "--version"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        console_print.assert_called_once_with("1.2.3")
 
     def test_main_rejects_all_subcommand(self):
         with (
@@ -147,10 +173,13 @@ class LocalizationTests(unittest.TestCase):
         account_help = parser._subparsers._group_actions[0].choices["account"].format_help()
 
         self.assertIn("--lang {en,zh}", help_text)
+        self.assertIn("-v, -V, --version", help_text)
         self.assertIn("set command language", help_text)
         self.assertIn("commands", help_text)
+        self.assertIn("inspect local bridge setup", help_text)
         self.assertIn("restart the bridge", help_text)
         self.assertIn("follow the bridge log", help_text)
+        self.assertIn("-d, --debug", start_help)
         self.assertIn("run bridge in foreground with live output", start_help)
         self.assertIn("account (a)", help_text)
         self.assertIn("list (ls)", account_help)
@@ -165,10 +194,13 @@ class LocalizationTests(unittest.TestCase):
         account_help = parser._subparsers._group_actions[0].choices["account"].format_help()
 
         self.assertIn("--lang {en,zh}", help_text)
+        self.assertIn("-v, -V, --version", help_text)
         self.assertIn("设置命令语言", help_text)
         self.assertIn("命令", help_text)
+        self.assertIn("只检查本地 bridge 配置", help_text)
         self.assertIn("重启 bridge", help_text)
         self.assertIn("实时查看 bridge 日志", help_text)
+        self.assertIn("-d, --debug", start_help)
         self.assertIn("以前台模式运行 bridge 并输出实时日志", start_help)
         self.assertIn("account (a)", help_text)
         self.assertIn("list (ls)", account_help)
@@ -410,8 +442,20 @@ class RunStartTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_start.assert_called_once_with(paths, background=False)
 
+    def test_main_start_dash_d_passes_flag(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_start", return_value=0) as run_start,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "start", "-d"]),
+        ):
+            exit_code = olb_cli.main()
 
-class ReloadCommandTests(unittest.TestCase):
+        self.assertEqual(exit_code, 0)
+        run_start.assert_called_once_with(paths, background=False)
+
+
+class RestartCommandTests(unittest.TestCase):
     def test_run_reload_restarts_running_bridge(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = make_paths(Path(tmp))
@@ -472,19 +516,43 @@ class ReloadCommandTests(unittest.TestCase):
         stop_proxy.assert_not_called()
         start_proxy.assert_called_once_with(paths, config, background=False)
 
-    def test_main_reload_debug_passes_flag(self):
+    def test_main_restart_debug_passes_flag(self):
         paths = make_paths(Path("/tmp/olb-test"))
         with (
             mock.patch.object(olb_cli, "get_paths", return_value=paths),
             mock.patch.object(olb_cli, "run_reload", return_value=0) as run_reload,
-            mock.patch.object(olb_cli.sys, "argv", ["olb", "reload", "--debug"]),
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "restart", "--debug"]),
         ):
             exit_code = olb_cli.main()
 
         self.assertEqual(exit_code, 0)
         run_reload.assert_called_once_with(paths, background=False)
 
-    def test_main_reload_without_flag_preserves_running_mode(self):
+    def test_main_restart_dash_d_passes_flag(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_reload", return_value=0) as run_reload,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "restart", "-d"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_reload.assert_called_once_with(paths, background=False)
+
+    def test_main_restart_without_flag_preserves_running_mode(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_reload", return_value=0) as run_reload,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "restart"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_reload.assert_called_once_with(paths, background=None)
+
+    def test_main_reload_alias_still_preserves_running_mode(self):
         paths = make_paths(Path("/tmp/olb-test"))
         with (
             mock.patch.object(olb_cli, "get_paths", return_value=paths),
@@ -558,6 +626,135 @@ class LogCommandTests(unittest.TestCase):
         stderr.write.assert_called_once_with("Cancelled\n")
         stderr.flush.assert_called_once_with()
         console_print.assert_not_called()
+
+
+class DoctorCommandTests(unittest.TestCase):
+    def test_doctor_checks_report_failures_and_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            with (
+                lang_env("en"),
+                mock.patch.object(olb_cli.shutil, "which", return_value=None),
+                mock.patch.object(
+                    olb_cli,
+                    "status_data",
+                    return_value={
+                        "root_ca": "missing",
+                        "hosts": "disabled",
+                        "hosts_file": "/etc/hosts",
+                        "nss": "unknown",
+                        "listener": "stopped",
+                        "listen_addr": "127.0.0.1:443",
+                    },
+                ),
+            ):
+                checks = olb_cli.doctor_checks(paths)
+
+        self.assertEqual(
+            [(check.name, check.status) for check in checks],
+            [
+                ("Config file", "fail"),
+                ("Active account", "fail"),
+                ("OpenSSL", "fail"),
+                ("Root CA", "warn"),
+                ("Hosts mapping", "warn"),
+                ("NSS trust", "warn"),
+                ("Listener", "warn"),
+            ],
+        )
+
+    def test_doctor_checks_fail_when_active_account_is_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = make_paths(Path(tmp))
+            olb_cli.save_config(
+                paths,
+                {
+                    "active_account": "default",
+                    "accounts": {
+                        "default": {
+                            "upstream_base": "https://api.openai.com/v1",
+                            "upstream_key": "test-key",
+                            "reasoning_effort": "medium",
+                        }
+                    },
+                },
+            )
+
+            with (
+                lang_env("en"),
+                mock.patch.object(olb_cli.shutil, "which", return_value="/usr/bin/openssl"),
+                mock.patch.object(
+                    olb_cli,
+                    "status_data",
+                    return_value={
+                        "root_ca": "present",
+                        "hosts": "enabled",
+                        "hosts_file": "/etc/hosts",
+                        "nss": "not_applicable",
+                        "listener": "stopped",
+                        "listen_addr": "127.0.0.1:443",
+                    },
+                ),
+            ):
+                checks = olb_cli.doctor_checks(paths)
+
+        active_account_check = next(check for check in checks if check.name == "Active account")
+        self.assertEqual(active_account_check.status, "fail")
+        self.assertIn("must not equal OLB_TARGET_HOST", active_account_check.detail)
+
+    def test_run_doctor_returns_zero_when_checks_pass(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        table = mock.Mock()
+        checks = [
+            olb_cli.DoctorCheck("Config file", "ok", "found"),
+            olb_cli.DoctorCheck("Listener", "warn", "not listening"),
+        ]
+
+        with (
+            lang_env("en"),
+            mock.patch.object(olb_cli, "doctor_checks", return_value=checks),
+            mock.patch.object(olb_cli, "Table", return_value=table),
+            mock.patch.object(olb_cli.console, "print") as console_print,
+        ):
+            exit_code = olb_cli.run_doctor(paths)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            [call.args for call in table.add_row.call_args_list],
+            [("Config file", "ok", "found"), ("Listener", "warning", "not listening")],
+        )
+        console_print.assert_has_calls([mock.call(table), mock.call("doctor checks passed")])
+
+    def test_run_doctor_returns_nonzero_when_failures_exist(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        table = mock.Mock()
+        checks = [
+            olb_cli.DoctorCheck("Config file", "fail", "missing"),
+            olb_cli.DoctorCheck("OpenSSL", "ok", "found"),
+        ]
+
+        with (
+            lang_env("en"),
+            mock.patch.object(olb_cli, "doctor_checks", return_value=checks),
+            mock.patch.object(olb_cli, "Table", return_value=table),
+            mock.patch.object(olb_cli.console, "print") as console_print,
+        ):
+            exit_code = olb_cli.run_doctor(paths)
+
+        self.assertEqual(exit_code, 1)
+        console_print.assert_has_calls([mock.call(table), mock.call("doctor found 1 failed check(s)")])
+
+    def test_main_doctor_runs_doctor_flow(self):
+        paths = make_paths(Path("/tmp/olb-test"))
+        with (
+            mock.patch.object(olb_cli, "get_paths", return_value=paths),
+            mock.patch.object(olb_cli, "run_doctor", return_value=0) as run_doctor,
+            mock.patch.object(olb_cli.sys, "argv", ["olb", "doctor"]),
+        ):
+            exit_code = olb_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        run_doctor.assert_called_once_with(paths)
 
 
 class AccountCommandTests(unittest.TestCase):
